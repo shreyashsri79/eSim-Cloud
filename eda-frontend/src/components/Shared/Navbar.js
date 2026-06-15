@@ -267,20 +267,7 @@ export function Header () {
               >
                 <ListItemText primary={auth.user.username} secondary={auth.user.email} />
               </MenuItem>
-              <MenuItem
-                component={RouterLink}
-                to="/dashboard/profile"
-                onClick={handleClose}
-              >
-                My Profile
-              </MenuItem>
-              <MenuItem
-                component={RouterLink}
-                to="/dashboard/schematics"
-                onClick={handleClose}
-              >
-                My Schematics
-              </MenuItem>
+
               <MenuItem
                 component={RouterLink}
                 to="/account/change_password"

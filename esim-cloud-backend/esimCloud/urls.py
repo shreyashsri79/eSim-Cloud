@@ -11,6 +11,7 @@ from libAPI import urls as libURLs
 from saveAPI import urls as saveURLs
 from workflowAPI import urls as workURLs
 from publishAPI import urls as publishURLs
+from authAPI import views as authAPI_views
 from authAPI import urls as authURLs
 from rest_framework import permissions
 from drf_yasg.views import get_schema_view
@@ -62,6 +63,8 @@ urlpatterns = [
     path('api/chat/', include(chatbotURLs)),
 
     # Auth API Routes
+    path('api/auth/users/', authAPI_views.CustomUserCreateView.as_view()),
+    path('api/auth/users/activation/', authAPI_views.CustomUserActivationView.as_view()),
     url(r'^api/auth/', include('djoser.urls')),
     url(r'^api/auth/', include('djoser.urls.authtoken')),
     url(r'^api/auth/', include("djoser.social.urls")),

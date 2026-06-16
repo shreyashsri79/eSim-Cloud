@@ -10,5 +10,6 @@ urlpatterns = [
     url(r'^google-callback', authAPI_views.GoogleOAuth2),
     url(r'^users/activate/(?P<uid>[\w-]+)/(?P<token>[\w-]+)/$',
         authAPI_views.activate_user),
-    url(r'user/token/', authAPI_views.CustomTokenCreateView.as_view())
+    url(r'user/token/', authAPI_views.CustomTokenCreateView.as_view()),
+    url(r'^dashboard/$', authAPI_views.account_dashboard)
 ]

@@ -607,6 +607,14 @@ function Header ({ gridRef }) {
                 >
                   Change password
                 </MenuItem>
+                <MenuItem
+                  component="a"
+                  href="/api/auth/dashboard/"
+                  target="_blank"
+                  onClick={handleClose}
+                >
+                  Admin Dashboard
+                </MenuItem>
                 <MenuItem onClick={() => {
                   setLogoutConfirm(true)
                 }}>

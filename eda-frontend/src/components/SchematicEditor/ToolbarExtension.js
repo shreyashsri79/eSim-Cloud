@@ -829,7 +829,7 @@ export function OpenSchDialog (props) {
                   {/* Listing Saved Schematics */}
                   {schematics.length === 0
                     ? <Typography variant="subtitle1" gutterBottom>
-                    Hey {auth.user.username} , You dont have any saved schematics...
+                    Hey {auth.user?.username || ''} , You dont have any saved schematics...
                     </Typography>
                     : <TableContainer component={Paper} style={{ maxHeight: '45vh' }}>
                       <Table stickyHeader size="small" aria-label="simple table">

@@ -208,6 +208,9 @@ export const signUp = (email, username, password, history) => (dispatch) => {
   api.post('auth/users/', body, config)
     .then((res) => {
       if (res.status === 200 || res.status === 201) {
+        if (res.data && res.data.otp) {
+          alert('OTP code is: ' + res.data.otp)
+        }
         dispatch({
           type: actions.SIGNUP_SUCCESSFUL,
           payload: {

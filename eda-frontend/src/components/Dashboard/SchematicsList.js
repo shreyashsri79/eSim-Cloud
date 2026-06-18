@@ -619,7 +619,7 @@ export default function SchematicsList ({ ltiDetails = null }) {
                 <TabPanel value={value} index={0}>
                   <CircuitListSection
                     circuits={saves.filter(x => x.lti_id == null && x.is_submission == null)}
-                    emptyMessage={`Hey ${auth.user.username}, you don't have any saved schematics...`}
+                    emptyMessage={`Hey ${auth.user?.username || ''}, you don't have any saved schematics...`}
                     onRefresh={doFetch}
                     classes={classes}
                   />
@@ -691,7 +691,7 @@ export default function SchematicsList ({ ltiDetails = null }) {
                       </Box>
                       {myProjects.length === 0 ? (
                         <Typography className={classes.emptyText}>
-                          Hey {auth.user.username}, you don't have any saved projects...
+                          Hey {auth.user?.username || ''}, you don't have any saved projects...
                         </Typography>
                       ) : (
                         <Grid container spacing={3}>
@@ -734,7 +734,7 @@ export default function SchematicsList ({ ltiDetails = null }) {
                 <TabPanel value={value} index={2}>
                   <CircuitListSection
                     circuits={saves.filter(x => x.lti_id != null)}
-                    emptyMessage={`Hey ${auth.user.username}, you don't have any saved LTI apps...`}
+                    emptyMessage={`Hey ${auth.user?.username || ''}, you don't have any saved LTI apps...`}
                     onRefresh={doFetch}
                     classes={classes}
                   />
@@ -744,7 +744,7 @@ export default function SchematicsList ({ ltiDetails = null }) {
                 <TabPanel value={value} index={3}>
                   <CircuitListSection
                     circuits={saves.filter(x => x.is_submission != null)}
-                    emptyMessage={`Hey ${auth.user.username}, you don't have any saved submissions...`}
+                    emptyMessage={`Hey ${auth.user?.username || ''}, you don't have any saved submissions...`}
                     onRefresh={doFetch}
                     classes={classes}
                   />

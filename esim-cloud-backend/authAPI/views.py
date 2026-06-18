@@ -172,11 +172,16 @@ class CustomUserCreateView(generics.GenericAPIView):
                 print(message)
                 print("="*80 + "\n")
 
-        return Response({
+        response_data = {
             "username": username,
             "email": email,
             "id": pending_user.id
-        }, status=status.HTTP_201_CREATED)
+        }
+        if (getattr(settings, 'EMAIL_HOST_USER', '') == 'youremail@gmail.com' and
+                getattr(settings, 'EMAIL_HOST_PASSWORD', '') == 'yourpassword'):
+            response_data["otp"] = token
+
+        return Response(response_data, status=status.HTTP_201_CREATED)
 
 
 class CustomUserActivationView(generics.GenericAPIView):

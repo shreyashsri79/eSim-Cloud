@@ -14,6 +14,33 @@ import KeyboardShorcuts from './KeyboardShorcuts.js'
 import { SideBar, magneticSnap } from './SideBar.js'
 import KiCadFileUtils from './KiCadFileUtils'
 
+const HEX_SIZE = 150;
+
+function getHexCoords(x, y) {
+  var q = (Math.sqrt(3) / 3 * x - 1 / 3 * y) / HEX_SIZE;
+  var r = (2 / 3 * y) / HEX_SIZE;
+  
+  var frac_q = q;
+  var frac_r = r;
+  var frac_s = -q - r;
+  
+  var round_q = Math.round(frac_q);
+  var round_r = Math.round(frac_r);
+  var round_s = Math.round(frac_s);
+  
+  var q_diff = Math.abs(round_q - frac_q);
+  var r_diff = Math.abs(round_r - frac_r);
+  var s_diff = Math.abs(round_s - frac_s);
+  
+  if (q_diff > r_diff && q_diff > s_diff) {
+    round_q = -round_r - round_s;
+  } else if (r_diff > s_diff) {
+    round_r = -round_q - round_s;
+  }
+  
+  return { q: round_q, r: round_r };
+}
+
 var graph
 
 const {
@@ -93,6 +120,15 @@ export default function LoadGrid(container, sidebar, outline, minimap) {
         var movedCell = this.cells[0]
         var model = this.graph.getModel()
 
+        // Reset index/caches if dragging a new/different component
+        if (this.lastMovedCell !== movedCell) {
+          this.lastMovedCell = movedCell
+          this.staticPinsByHex = null
+          this.currentHexKey = null
+          this.cachedTargetPins = null
+          this.lastCalcTime = 0
+        }
+
         // Collect pins of the moved component
         var movedPins = []
         var movedChildren = model.getChildCount(movedCell)
@@ -102,18 +138,71 @@ export default function LoadGrid(container, sidebar, outline, minimap) {
         }
 
         if (movedPins.length > 0) {
-          // Collect static pins
-          var staticPins = []
-          var allCells = model.cells
-          Object.values(allCells).forEach(function (cell) {
-            if (cell && cell.Pin && cell.ParentComponent !== movedCell && cell.parent !== movedCell) {
-              staticPins.push(cell)
-            }
-          })
-
           var scale = this.graph.view.scale
           var graphDx = delta.x / scale
           var graphDy = delta.y / scale
+
+          // Get dragged component current center/top-left coordinate
+          var compX = movedCell.geometry.x + graphDx
+          var compY = movedCell.geometry.y + graphDy
+          var currentHexCoords = getHexCoords(compX, compY)
+          var currentHexKey = `${currentHexCoords.q},${currentHexCoords.r}`
+
+          var now = Date.now()
+          var hexChanged = (this.currentHexKey !== currentHexKey)
+          var cooldownPassed = (!this.lastCalcTime || (now - this.lastCalcTime > 500))
+
+          if (this.currentHexKey === undefined || this.currentHexKey === null || (hexChanged && cooldownPassed)) {
+            this.currentHexKey = currentHexKey
+            this.lastCalcTime = now
+
+            // Index all static pins on first run of the drag
+            if (!this.staticPinsByHex) {
+              this.staticPinsByHex = {}
+              var allCells = model.cells
+              Object.values(allCells).forEach(cell => {
+                if (cell && cell.Pin && cell.ParentComponent !== movedCell && cell.parent !== movedCell) {
+                  var parent = cell.ParentComponent || cell.parent
+                  if (parent && parent.geometry) {
+                    var px = parent.geometry.x + cell.geometry.x
+                    var py = parent.geometry.y + cell.geometry.y
+                    var hc = getHexCoords(px, py)
+                    var pKey = `${hc.q},${hc.r}`
+                    if (!this.staticPinsByHex[pKey]) {
+                      this.staticPinsByHex[pKey] = []
+                    }
+                    this.staticPinsByHex[pKey].push(cell)
+                  }
+                }
+              })
+            }
+
+            // Target neighboring hexagonal chunks (Priority 1) of the current chunk (Priority 2)
+            var qc = currentHexCoords.q
+            var rc = currentHexCoords.r
+            var neighbors = [
+              { q: qc, r: rc }, // Priority 2
+              { q: qc + 1, r: rc }, // Priority 1 neighbors
+              { q: qc - 1, r: rc },
+              { q: qc, r: rc + 1 },
+              { q: qc, r: rc - 1 },
+              { q: qc + 1, r: rc - 1 },
+              { q: qc - 1, r: rc + 1 }
+            ]
+
+            var targetPins = []
+            neighbors.forEach(n => {
+              var key = `${n.q},${n.r}`
+              var pinsInChunk = this.staticPinsByHex[key]
+              if (pinsInChunk) {
+                targetPins = targetPins.concat(pinsInChunk)
+              }
+            })
+
+            this.cachedTargetPins = targetPins
+          }
+
+          var staticPins = this.cachedTargetPins || []
 
           var SNAP_TOLERANCE = 20
           var bestDist = SNAP_TOLERANCE
@@ -330,7 +419,8 @@ export default function LoadGrid(container, sidebar, outline, minimap) {
         return isLeftClickCanvas
       }
 
-      // Add Mouse Wheel Zooming (cursor-centric)
+      // Add Mouse Wheel Zooming (cursor-centric, throttled using requestAnimationFrame)
+      var pendingZoom = null
       mxEvent.addMouseWheelListener(function (evt, up) {
         if (mxEvent.isConsumed(evt)) return
         
@@ -338,30 +428,46 @@ export default function LoadGrid(container, sidebar, outline, minimap) {
         var x = evt.clientX - rect.left
         var y = evt.clientY - rect.top
         
-        var prevScale = graph.view.scale
-        var prevTranslate = graph.view.translate
-        
         var zoomFactor = 1.05 // Smoother, slower zoom for scroll wheels
+        var factor = up ? zoomFactor : 1 / zoomFactor
         
-        var oldCenterZoom = graph.centerZoom
-        graph.centerZoom = false // Prevent mxGraph from centering the zoom
-        
-        if (up) {
-          graph.zoom(zoomFactor)
+        if (!pendingZoom) {
+          pendingZoom = {
+            factor: factor,
+            x: x,
+            y: y
+          }
+          
+          requestAnimationFrame(function () {
+            if (!pendingZoom) return
+            
+            var targetFactor = pendingZoom.factor
+            var targetX = pendingZoom.x
+            var targetY = pendingZoom.y
+            pendingZoom = null
+            
+            var prevScale = graph.view.scale
+            var prevTranslate = graph.view.translate
+            
+            var newScale = Math.max(0.1, Math.min(10, prevScale * targetFactor))
+            if (newScale !== prevScale) {
+              var newTx = prevTranslate.x - targetX * (1 / prevScale - 1 / newScale)
+              var newTy = prevTranslate.y - targetY * (1 / prevScale - 1 / newScale)
+              
+              var oldCenterZoom = graph.centerZoom
+              graph.centerZoom = false
+              
+              graph.view.scaleAndTranslate(newScale, newTx, newTy)
+              
+              graph.centerZoom = oldCenterZoom
+            }
+          })
         } else {
-          graph.zoom(1 / zoomFactor)
+          // Accumulate zoom factor and use latest cursor coordinates
+          pendingZoom.factor *= factor
+          pendingZoom.x = x
+          pendingZoom.y = y
         }
-        
-        var newScale = graph.view.scale
-        if (newScale !== prevScale) {
-          var newTranslate = new mxPoint(
-            prevTranslate.x - x * (1 / prevScale - 1 / newScale),
-            prevTranslate.y - y * (1 / prevScale - 1 / newScale)
-          )
-          graph.view.setTranslate(newTranslate.x, newTranslate.y)
-        }
-        
-        graph.centerZoom = oldCenterZoom
         
         mxEvent.consume(evt)
       }, graph.container)

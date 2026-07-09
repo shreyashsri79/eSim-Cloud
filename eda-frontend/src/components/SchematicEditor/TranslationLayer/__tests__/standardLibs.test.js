@@ -11,7 +11,7 @@ import fs from 'fs'
 import path from 'path'
 import { getStandardDefs, resetStandardDefs } from '../standardLibs'
 import { parseLegacyLib } from '../legacyLib'
-import { readKicadSchematic, defForComponent, buildDefsIndex } from '../../Helper/KiCadFileUtils'
+import { readKicadSchematic, defForComponent, buildDefsIndex, defMatchesWires } from '../../Helper/KiCadFileUtils'
 
 const SLICE = fs.readFileSync(path.join(__dirname, 'fixtures', 'standard-slice.lib'), 'utf8')
 
@@ -81,5 +81,35 @@ describe('buildDefsIndex / defForComponent', () => {
     const defs = buildDefsIndex(standard, cache)
     const def = defForComponent(defs, { rawName: 'R', componentName: 'r' })
     expect(def.pins[0].y).toBe(500) // cache version, not Device.lib's 100 mil pin
+  })
+})
+
+describe('defMatchesWires — generation-mismatch guard', () => {
+  // RC.sch's R1 was drawn with the old horizontal R (pins -100/+200, y 50);
+  // the bundled modern Device.lib R is vertical (pins 0,±150). Trusting the
+  // wrong def would put "exact" pins off the wires and mangle the netlist.
+  const RC_SCH = fs.readFileSync(path.join(__dirname, 'fixtures', 'RC.sch'), 'utf8')
+  const instr = readKicadSchematic(RC_SCH)
+  const segments = instr.wires.map((w) => ({
+    a: { x: w.startx, y: w.starty },
+    b: { x: w.endx, y: w.endy }
+  }))
+  const r1 = instr.components.find((c) => c.reference === 'R1')
+
+  const oldR = parseLegacyLib(
+    'DEF R R 0 0 N Y 1 F N\nDRAW\nX ~ 1 -100 50 50 R 60 60 1 1 P\nX ~ 2 200 50 50 L 60 60 1 1 P\nENDDRAW\nENDDEF\n').get('R')
+  const modernR = parseLegacyLib(SLICE).get('R') // Device.lib: 0,±150 vertical
+
+  it('accepts the def the schematic was drawn with', () => {
+    expect(defMatchesWires(r1, oldR, segments)).toBe(true)
+  })
+
+  it('rejects a same-named def from a different library generation', () => {
+    expect(modernR.pins.map((p) => [p.x, p.y])).toEqual([[0, 150], [0, -150]])
+    expect(defMatchesWires(r1, modernR, segments)).toBe(false)
+  })
+
+  it('rejects defs when the component is fully unwired', () => {
+    expect(defMatchesWires(r1, oldR, [])).toBe(false)
   })
 })

@@ -18,7 +18,7 @@ import api from '../../../utils/Api'
 import { fetchSymbolSchema, initialProperties, adjustModelPolarity } from './SvgParser'
 import ComponentParameters from './ComponentParametersData'
 import { schematicStore } from '../Canvas/schematicStore'
-import { snapPoint, pinAbsolutePosition } from '../Canvas/geometry'
+import { snapPoint, pinAbsolutePosition, projectOntoSegment } from '../Canvas/geometry'
 import { extractLegacyNets } from '../TranslationLayer/legacyNets'
 import { wirePointGroups } from '../TranslationLayer/autoWire'
 import { parseLegacyLib, legacyPinPosition, buildPlaceholder } from '../TranslationLayer/legacyLib'
@@ -285,19 +285,48 @@ function placedPinPoint (netPoint, placedById) {
 }
 
 /**
+ * A lib def can only be trusted for exact netlisting when it is the same
+ * symbol the schematic was drawn with. A project -cache.lib always is; the
+ * bundled standard libraries may carry a *different generation* of a symbol
+ * under the same name (modern Device.lib's R is vertical with pins at
+ * 0,±150 mil — old eSim schematics used a horizontal R at -100/+200), and
+ * wrong "exact" pins are worse than proximity matching. Sanity check: at
+ * least half the def's pins (min 1) must land on the schematic's own wires.
+ */
+export function defMatchesWires (comp, def, segments, eps = 1.5) {
+  if (!def.pins.length) return false
+  let matched = 0
+  for (const pin of def.pins) {
+    const p = legacyPinPosition(comp, pin)
+    for (const s of segments) {
+      if (projectOntoSegment(p, s.a, s.b).d <= eps) {
+        matched++
+        break
+      }
+    }
+  }
+  return matched >= Math.max(1, Math.ceil(def.pins.length / 2))
+}
+
+/**
  * Resolve and place the components, then reconstruct connectivity from the
  * original wires/junctions and re-route every net between the placed pins.
  *
- * With a -cache.lib the original pin positions are exact (legacyPinPosition),
- * so netlist extraction has zero ambiguity and unresolved components get a
- * placeholder symbol with the exact pin layout instead of being dropped.
- * Without it, connectivity falls back to proximity matching of the placed
- * pins against the original wires.
+ * With a matching lib def the original pin positions are exact
+ * (legacyPinPosition), so netlist extraction has zero ambiguity and
+ * unresolved components get a placeholder symbol with the exact pin layout
+ * instead of being dropped. Otherwise connectivity falls back to proximity
+ * matching of the placed pins against the original wires.
  */
 const loadComponents = async (instructions, defs) => {
   const token = store.getState().authReducer.token
   const config = { headers: { 'Content-Type': 'application/json' } }
   if (token) { config.headers.Authorization = `Token ${token}` }
+
+  const segments = instructions.wires.map((w) => ({
+    a: { x: w.startx, y: w.starty },
+    b: { x: w.endx, y: w.endy }
+  }))
 
   const cache = new Map()
   const netPins = [] // fed to extractLegacyNets
@@ -307,6 +336,7 @@ const loadComponents = async (instructions, defs) => {
 
   for (const comp of instructions.components) {
     const def = defForComponent(defs, comp)
+    const defValid = def && defMatchesWires(comp, def, segments)
     const resolved = await resolveLegacyComponent(comp, cache, config)
 
     let placed = null
@@ -361,7 +391,7 @@ const loadComponents = async (instructions, defs) => {
     }
     placedById.set(placed.id, placed)
 
-    if (def) {
+    if (defValid) {
       // Exact: the original sheet position of every pin, straight from the lib
       def.pins.forEach((pin, idx) => {
         const p = legacyPinPosition(comp, pin)
@@ -377,10 +407,7 @@ const loadComponents = async (instructions, defs) => {
   }
 
   const nets = extractLegacyNets({
-    segments: instructions.wires.map((w) => ({
-      a: { x: w.startx, y: w.starty },
-      b: { x: w.endx, y: w.endy }
-    })),
+    segments,
     junctions: instructions.connections,
     labels: instructions.labels,
     pins: netPins

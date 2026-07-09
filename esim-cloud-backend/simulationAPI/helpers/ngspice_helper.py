@@ -38,15 +38,27 @@ def ExecNetlist(filepath, file_id):
         stdout, stderr = proc.communicate()
         logger.info('Ran ngSpice command')
         if proc.returncode not in [0, 1]:
+            # ngspice died on a signal (e.g. -11 = SIGSEGV on a malformed
+            # .model line). It prints nothing in that case, so log the
+            # netlist itself for diagnosis and report a structured failure —
+            # raising here used to be swallowed below and returned None,
+            # which the frontend rendered as an infinite "Loading...".
             logger.error('ngspice error encountered')
             logger.error(stderr)
             logger.error(proc.returncode)
             logger.error(stdout)
-            target = os.listdir(current_dir)
-            for item in target:
-                if (item.endswith(".txt")):
-                    os.remove(os.path.join('.', item))
-            raise CannotRunSpice("ngspice exited with error")
+            try:
+                with open(filepath, 'r', errors='replace') as f:
+                    logger.error('netlist that killed ngspice:\n%s', f.read())
+            except OSError:
+                pass
+            msg = (stderr or b'').decode('utf-8', errors='replace').strip()
+            if not msg:
+                msg = ('ngspice crashed (exit code {}) without output. '
+                       'The generated netlist contains a construct ngspice '
+                       'cannot parse — check component values and .model '
+                       'lines.').format(proc.returncode)
+            return {'fail': msg, 'error_help': parse_ngspice_error(msg)}
         else:
             logger.info('Ran ngSpice')
 
@@ -99,8 +111,12 @@ def ExecNetlist(filepath, file_id):
         print('tle')
         return output
     except Exception as e:
+        # Never return None: the task would be marked SUCCESS with an empty
+        # result and the frontend would poll forever.
         logger.exception('Encountered Exception:')
         logger.exception(e)
+        return {'fail': 'Simulation failed: {}'.format(e),
+                'error_help': None}
     finally:
         target = os.listdir(current_dir)
         os.remove(filepath)

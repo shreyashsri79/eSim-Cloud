@@ -152,12 +152,15 @@ describe('extractLegacyNets (RC.sch topology)', () => {
   }))
 
   // Placed library pins — deliberately offset from the original wire ends,
-  // the way real library symbols land (different pin geometry than KiCad's).
+  // the way real library symbols land. R is the hard case seen in practice:
+  // the KiCad symbol is horizontal (wires end left/right of centre) but the
+  // library symbol is vertical, so BOTH pins are nearest to the 'in' wire —
+  // naive nearest-wire matching would short them onto the same net.
   const pins = [
     { x: 1050, y: 612, componentId: 'v1', pin: '+' }, // 12 below wire end
     { x: 1050, y: 768, componentId: 'v1', pin: '-' }, // 12 above bottom rail
-    { x: 1118, y: 600, componentId: 'r1', pin: '1' }, // 12 short of wire end
-    { x: 1202, y: 600, componentId: 'r1', pin: '2' }, // lands ON the wire run
+    { x: 1150, y: 570, componentId: 'r1', pin: '1' }, // in: d=36, out: d=50
+    { x: 1150, y: 650, componentId: 'r1', pin: '2' }, // in: d=54, out: d=64
     { x: 1270, y: 628, componentId: 'c1', pin: '1' },
     { x: 1270, y: 692, componentId: 'c1', pin: '2' },
     { x: 1160, y: 812, componentId: 'gnd', pin: '1' },
@@ -191,6 +194,19 @@ describe('extractLegacyNets (RC.sch topology)', () => {
       pins: [{ x: 500, y: 100, componentId: 'x', pin: '1' }]
     })
     expect(far).toHaveLength(0)
+  })
+
+  it('lets leftover pins share a net when nothing else is in range (shorts)', () => {
+    // One wire only; both pins of the component can only reach that net.
+    const shorted = extractLegacyNets({
+      segments: [{ a: { x: 0, y: 0 }, b: { x: 100, y: 0 } }],
+      pins: [
+        { x: 20, y: 10, componentId: 'r1', pin: '1' },
+        { x: 80, y: 10, componentId: 'r1', pin: '2' }
+      ]
+    })
+    expect(shorted).toHaveLength(1)
+    expect(shorted[0].points).toHaveLength(2)
   })
 })
 

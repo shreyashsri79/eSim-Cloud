@@ -298,11 +298,17 @@ const loadComponents = async (instructions, defs) => {
       })
       placed = schematicStore.getComponent(id)
     } else if (def) {
-      // Not in the library — place an exact-pin placeholder from the cache lib
+      // Not in the library — place an exact-pin placeholder from the cache lib.
+      // KiCad references starting with '#' (power symbols, PWR_FLAG) are
+      // virtual and must never reach the SPICE netlist — a bare "FLG1 0"
+      // line segfaults ngspice. eSim's plot_* symbols are display-only
+      // probes, equally not simulatable. Both get the 'PWR' symbol so the
+      // netlist compiler's existing skip rule drops them.
+      const virtual = def.reference.startsWith('#') || /^plot/i.test(def.name)
       const ph = buildPlaceholder(comp, def)
       const id = schematicStore.addComponent({
         ...ph,
-        symbol: def.reference.replace(/^#/, '') || 'U',
+        symbol: virtual ? 'PWR' : (def.reference || 'U'),
         rotation: 0, // transform baked into the pin offsets
         compObject: { name: def.name, placeholder: true },
         properties: { NAME: (comp.reference || def.name).toUpperCase() }

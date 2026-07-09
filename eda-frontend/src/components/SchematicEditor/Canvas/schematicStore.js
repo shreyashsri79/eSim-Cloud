@@ -35,7 +35,16 @@
  * @property {number} y
  */
 
-import { buildSpatialIndex, pinAbsolutePosition, componentBBox, snapPoint } from './geometry'
+import {
+  buildSpatialIndex,
+  pinAbsolutePosition,
+  componentBBox,
+  snapPoint,
+  simplifyPolyline,
+  weldWireEndpoints,
+  wiresAttachedToComponents,
+  applyWireStretch
+} from './geometry'
 
 let idCounter = 2 // 0 and 1 are reserved by the legacy mxGraph root cells
 
@@ -157,11 +166,21 @@ export const schematicStore = {
 
   moveCells (ids, dx, dy, opts) {
     const idSet = new Set(ids)
+    // Wires connect by coordinate coincidence, so any wire vertex parked on a
+    // pin of a moved component has to travel with it or the net breaks.
+    // Classified against the pre-move positions; stretch elbows dodge the
+    // component bodies at their post-move positions.
+    const attached = wiresAttachedToComponents(state.components, state.wires, idSet)
+    const movedComponents = state.components.map((c) =>
+      idSet.has(c.id) ? { ...c, x: c.x + dx, y: c.y + dy } : c)
+    const obstacles = movedComponents.map(componentBBox)
+    const stretched = new Map(applyWireStretch(attached, dx, dy, obstacles).map((w) => [w.id, w]))
     commit({
-      components: state.components.map((c) =>
-        idSet.has(c.id) ? { ...c, x: c.x + dx, y: c.y + dy } : c),
+      components: movedComponents,
       wires: state.wires.map((w) =>
-        idSet.has(w.id) ? { ...w, points: w.points.map((p) => ({ x: p.x + dx, y: p.y + dy })) } : w),
+        idSet.has(w.id)
+          ? { ...w, points: w.points.map((p) => ({ x: p.x + dx, y: p.y + dy })) }
+          : (stretched.get(w.id) || w)),
       probes: state.probes.map((p) =>
         idSet.has(p.id) ? { ...p, x: p.x + dx, y: p.y + dy } : p)
     }, opts)
@@ -243,21 +262,53 @@ export const schematicStore = {
     return clipboard.components.length + clipboard.wires.length
   },
 
-  paste () {
+  paste (cursorPos) {
     if (!clipboard) return
-    const off = pasteOffset
-    pasteOffset += 20
+    let dx, dy
+    if (cursorPos) {
+      let minX = Infinity
+      let minY = Infinity
+      let maxX = -Infinity
+      let maxY = -Infinity
+      for (const c of clipboard.components) {
+        const b = componentBBox(c)
+        minX = Math.min(minX, b.x)
+        minY = Math.min(minY, b.y)
+        maxX = Math.max(maxX, b.x + b.width)
+        maxY = Math.max(maxY, b.y + b.height)
+      }
+      for (const w of clipboard.wires) {
+        for (const p of w.points) {
+          minX = Math.min(minX, p.x)
+          minY = Math.min(minY, p.y)
+          maxX = Math.max(maxX, p.x)
+          maxY = Math.max(maxY, p.y)
+        }
+      }
+      if (minX === Infinity) return // empty clipboard
+      const centerX = (minX + maxX) / 2
+      const centerY = (minY + maxY) / 2
+      const snapped = snapPoint(cursorPos)
+      dx = Math.round((snapped.x - centerX) / 10) * 10
+      dy = Math.round((snapped.y - centerY) / 10) * 10
+    } else {
+      const off = pasteOffset
+      pasteOffset += 20
+      dx = off
+      dy = off
+    }
+
     const newComps = clipboard.components.map((c) => ({
       ...c,
       id: nextCellId(),
-      x: c.x + off,
-      y: c.y + off,
+      x: c.x + dx,
+      y: c.y + dy,
       properties: { ...c.properties },
       pins: c.pins.map((p) => ({ ...p }))
     }))
     const newWires = clipboard.wires.map((w) => ({
       id: nextCellId(),
-      points: w.points.map((p) => ({ x: p.x + off, y: p.y + off }))
+      points: w.points.map((p) => ({ x: p.x + dx, y: p.y + dy }))
     }))
     commit({
       components: [...state.components, ...newComps],
@@ -346,20 +397,11 @@ function maxProbeNumber () {
 }
 
 function dedupePoints (points) {
-  const out = []
-  for (const p of points) {
-    const sp = snapPoint(p)
-    const last = out[out.length - 1]
-    if (!last || last.x !== sp.x || last.y !== sp.y) out.push(sp)
-  }
-  // Merge colinear runs (a-b-c on one axis -> a-c)
-  for (let i = out.length - 2; i > 0; i--) {
-    const a = out[i - 1]
-    const b = out[i]
-    const c = out[i + 1]
-    if ((a.x === b.x && b.x === c.x) || (a.y === b.y && b.y === c.y)) out.splice(i, 1)
-  }
-  return out
+  // Grid-snap the polyline, then weld the endpoints onto the exact coordinates
+  // of any pin/vertex the raw points were dropped on — symbols put pins at
+  // off-grid positions and connectivity needs sub-pixel coincidence.
+  const snapped = points.map((p) => snapPoint(p))
+  return simplifyPolyline(weldWireEndpoints(snapped, schematicStore.getSpatialIndex(), points))
 }
 
 export { componentBBox }

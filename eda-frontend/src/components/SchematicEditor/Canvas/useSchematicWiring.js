@@ -19,11 +19,23 @@
  */
 
 import { useRef, useCallback } from 'react'
-import { snapPoint, orthogonalRoute } from './geometry'
+import { snapPoint, routeManhattan, componentBBox } from './geometry'
 import { schematicStore } from './schematicStore'
 import { interactionStore } from './interactionStore'
 
 const MAGNET_TOLERANCE = 8
+
+/** Component bodies the router must not cross, cached per committed doc */
+let obstaclesCache = null
+let obstaclesFor = null
+function componentObstacles () {
+  const comps = schematicStore.getState().components
+  if (obstaclesFor !== comps) {
+    obstaclesCache = comps.map(componentBBox)
+    obstaclesFor = comps
+  }
+  return obstaclesCache
+}
 
 export default function useSchematicWiring () {
   // 'idle' | 'armed' | 'drawing'
@@ -53,7 +65,7 @@ export default function useSchematicWiring () {
     }
     const last = pointsRef.current[pointsRef.current.length - 1]
     const cursor = cursorRef.current
-    const corners = orthogonalRoute(last, cursor, dirRef.current)
+    const corners = routeManhattan(last, cursor, dirRef.current, componentObstacles())
     interactionStore.set({
       wireDraft: {
         points: pointsRef.current,
@@ -121,7 +133,7 @@ export default function useSchematicWiring () {
 
     // drawing: anchor the tracked segment(s)
     const last = pointsRef.current[pointsRef.current.length - 1]
-    const corners = orthogonalRoute(last, snap, dirRef.current)
+    const corners = routeManhattan(last, snap, dirRef.current, componentObstacles())
     const newPoints = [...pointsRef.current, ...corners, { x: snap.x, y: snap.y }]
 
     if (snap.target) {
@@ -141,7 +153,7 @@ export default function useSchematicWiring () {
     const cursor = cursorRef.current
     let finalPoints = pointsRef.current
     if (cursor && (cursor.x !== last.x || cursor.y !== last.y)) {
-      finalPoints = [...pointsRef.current, ...orthogonalRoute(last, cursor, dirRef.current), cursor]
+      finalPoints = [...pointsRef.current, ...routeManhattan(last, cursor, dirRef.current, componentObstacles()), cursor]
     }
     commitWire(finalPoints)
     return true

@@ -13,7 +13,8 @@ import store from '../../../redux/store'
 import * as actions from '../../../redux/actions/actions'
 import {
   GRID_SIZE, screenToCanvas, zoomAtPoint, snap, snapPoint,
-  pinAbsolutePosition, componentBBox
+  pinAbsolutePosition, componentBBox,
+  wiresAttachedToComponents, applyWireStretch
 } from './geometry'
 import { schematicStore } from './schematicStore'
 import { interactionStore, useInteractionState } from './interactionStore'
@@ -287,6 +288,9 @@ function InteractionOverlay ({ svgRef }) {
           fill="none" stroke={snapIndicator.magnetic ? '#e91e63' : '#9e9e9e'} strokeWidth={1.5}
         />
       )}
+      {dragGhost && dragGhost.stretched && dragGhost.stretched.map((w) => (
+        <path key={w.id} d={wirePath(w.points)} stroke={WIRE_SELECTED} strokeWidth={1.6} fill="none" opacity={0.55} />
+      ))}
       {dragGhost && dragGhost.items.map((item) => (
         <g key={item.id} transform={`translate(${dragGhost.dx} ${dragGhost.dy})`} opacity={0.55}>
           {item.kind === 'component' && (
@@ -447,7 +451,10 @@ export default function SchematicCanvas () {
       const probe = st.probes.find((p) => p.id === id)
       if (probe) items.push({ id, kind: 'probe', probe })
     }
-    gesture.current = { type: 'drag', start, items, ids: selection, moved: false }
+    // Wires hanging off the dragged pins, classified once against the pre-move
+    // positions so each mousemove only re-applies the delta.
+    const attached = wiresAttachedToComponents(st.components, st.wires, new Set(selection))
+    gesture.current = { type: 'drag', start, items, ids: selection, attached, moved: false }
   }, [toCanvas, wiring])
 
   const onCompMouseDown = useCallback((evt, id) => beginCellDrag(evt, id), [beginCellDrag])
@@ -548,7 +555,17 @@ export default function SchematicCanvas () {
         }
         g.dx = dx
         g.dy = dy
-        interactionStore.set({ dragGhost: { items: g.items, dx, dy } })
+        // Rubber-band preview: points are already absolute, so the overlay
+        // draws them outside the translate(dx, dy) applied to the ghost items.
+        // Obstacles at post-move positions keep the ghost identical to commit.
+        let stretched = null
+        if (g.attached.length) {
+          const idSet = new Set(g.ids)
+          const obstacles = schematicStore.getState().components.map((c) =>
+            componentBBox(idSet.has(c.id) ? { ...c, x: c.x + dx, y: c.y + dy } : c))
+          stretched = applyWireStretch(g.attached, dx, dy, obstacles)
+        }
+        interactionStore.set({ dragGhost: { items: g.items, dx, dy, stretched } })
       }
     }
 
@@ -681,25 +698,33 @@ export default function SchematicCanvas () {
       if (ctrl) {
         if (key === 'z' || key === 'Z') {
           evt.preventDefault()
+          evt.stopPropagation()
           if (evt.shiftKey) schematicStore.redo()
           else schematicStore.undo()
         } else if (key === 'y') {
           // legacy: zoom-to-actual
+          evt.stopPropagation()
           schematicStore.setView({ s: 1, dx: 0, dy: 0 })
         } else if (key === 'c') {
+          evt.stopPropagation()
           schematicStore.copySelection()
         } else if (key === 'v') {
-          schematicStore.paste()
+          evt.stopPropagation()
+          schematicStore.paste(mouseCanvasPos.current)
         } else if (key === 'r' || key === 'R') {
+          evt.stopPropagation()
           rotateSelection(90)
         } else if (key === '=' || key === '+') {
           evt.preventDefault()
+          evt.stopPropagation()
           zoomCentre(1.2)
         } else if (key === '-') {
           evt.preventDefault()
+          evt.stopPropagation()
           zoomCentre(1 / 1.2)
         } else if (key === 'a') {
           evt.preventDefault()
+          evt.stopPropagation()
           schematicStore.selectAll()
         }
       }

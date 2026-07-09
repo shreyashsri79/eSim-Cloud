@@ -4,10 +4,15 @@
  * legacy mxGraph XML round-trip.
  */
 
-import { screenToCanvas, zoomAtPoint, snap, orthogonalRoute, pinAbsolutePosition, buildSpatialIndex } from '../geometry'
+import {
+  screenToCanvas, zoomAtPoint, snap, orthogonalRoute, pinAbsolutePosition, buildSpatialIndex,
+  wiresAttachedToComponents, applyWireStretch, segmentAxis, simplifyPolyline,
+  segIntersectsRect, pathClear, routeManhattan, componentBBox
+} from '../geometry'
 import { buildNetwork, compileNetlist, checkErc, DSU } from '../dsuNetlist'
 import { computeJunctions, snapProbeToWire } from '../junctions'
 import { toLegacyXml, fromLegacyXml } from '../LegacyMxGraphSerializer'
+import { schematicStore } from '../schematicStore'
 
 const resistor = (id, x, y) => ({
   id,
@@ -184,5 +189,239 @@ describe('LegacyMxGraphSerializer', () => {
     const back = fromLegacyXml(toLegacyXml(doc))
     const net = buildNetwork(back)
     expect(net.pinNode.get('2:2')).toBe('0')
+  })
+})
+
+describe('wire rubber-banding on component drag', () => {
+  // r1 pins (0,10) (60,10); r2 pins (200,10) (260,10); wire joins the inner pins
+  const r1 = () => resistor('2', 0, 0)
+  const r2 = () => resistor('3', 200, 0)
+  const link = () => ({ id: '4', points: [{ x: 60, y: 10 }, { x: 200, y: 10 }] })
+
+  const load = () => schematicStore.loadDocument({ components: [r1(), r2()], wires: [link()] })
+  const wire = () => schematicStore.getState().wires[0]
+
+  /** Every segment must be axis-aligned: no diagonals, ever. */
+  const expectManhattan = (points) => {
+    for (let i = 1; i < points.length; i++) {
+      expect(segmentAxis(points[i - 1], points[i])).not.toBeNull()
+    }
+  }
+
+  it('classifies one moving component as a stretch of the attached end only', () => {
+    const attached = wiresAttachedToComponents([r1(), r2()], [link()], new Set(['2']))
+    expect(attached).toHaveLength(1)
+    expect(attached[0].mode).toBe('stretch')
+    expect([...attached[0].indices]).toEqual([0]) // only the pin-2 end of r1
+  })
+
+  it('classifies both moving components as a whole-wire translate', () => {
+    const attached = wiresAttachedToComponents([r1(), r2()], [link()], new Set(['2', '3']))
+    expect(attached[0].mode).toBe('translate')
+  })
+
+  it('ignores wires that touch no moving pin', () => {
+    const stray = { id: '5', points: [{ x: 500, y: 500 }, { x: 600, y: 500 }] }
+    expect(wiresAttachedToComponents([r1()], [stray], new Set(['2']))).toEqual([])
+  })
+
+  it('skips wires that are themselves being dragged', () => {
+    expect(wiresAttachedToComponents([r1()], [link()], new Set(['2', '4']))).toEqual([])
+  })
+
+  it('simplifies duplicate and colinear vertices without moving coordinates', () => {
+    expect(simplifyPolyline([
+      { x: 0, y: 0 }, { x: 0, y: 0 }, { x: 50, y: 0 }, { x: 90, y: 0 }, { x: 90, y: 30 }
+    ])).toEqual([{ x: 0, y: 0 }, { x: 90, y: 0 }, { x: 90, y: 30 }])
+  })
+
+  it('reports segment axes and rejects diagonals', () => {
+    expect(segmentAxis({ x: 0, y: 0 }, { x: 10, y: 0 })).toBe('H')
+    expect(segmentAxis({ x: 0, y: 0 }, { x: 0, y: 10 })).toBe('V')
+    expect(segmentAxis({ x: 0, y: 0 }, { x: 10, y: 10 })).toBeNull()
+  })
+
+  it('leaves the source wire untouched (pure)', () => {
+    const w = link()
+    const attached = wiresAttachedToComponents([r1()], [w], new Set(['2']))
+    applyWireStretch(attached, 0, 40)
+    expect(w.points[0]).toEqual({ x: 60, y: 10 })
+  })
+
+  it('bends the wire at 90 degrees when one component moves off-axis', () => {
+    load()
+    schematicStore.moveCells(['2'], 0, 40)
+    // Vertical stub at the dragged pin, then the original horizontal run.
+    expect(wire().points).toEqual([{ x: 60, y: 50 }, { x: 60, y: 10 }, { x: 200, y: 10 }])
+    expectManhattan(wire().points)
+    const net = buildNetwork(schematicStore.getState())
+    expect(net.pinNode.get('2:2')).toBe(net.pinNode.get('3:1'))
+  })
+
+  it('just shortens the wire when the move stays on the segment axis', () => {
+    load()
+    schematicStore.moveCells(['2'], 40, 0) // slide r1 right along the wire
+    expect(wire().points).toEqual([{ x: 100, y: 10 }, { x: 200, y: 10 }])
+    expectManhattan(wire().points)
+  })
+
+  it('bends a vertical wire without cutting through the moved body', () => {
+    const gnd = ground('3', 50, 100) // pin at (60, 100)
+    schematicStore.loadDocument({
+      components: [r1(), gnd],
+      wires: [{ id: '4', points: [{ x: 60, y: 10 }, { x: 60, y: 100 }] }]
+    })
+    schematicStore.moveCells(['2'], 40, 0)
+    // The horizontal stub back to x=60 would run through r1's own body
+    // (now at 40..100 x 0..20), so the elbow flips to drop down first.
+    expect(wire().points).toEqual([{ x: 100, y: 10 }, { x: 100, y: 100 }, { x: 60, y: 100 }])
+    expectManhattan(wire().points)
+    expect(pathClear(wire().points, [componentBBox(schematicStore.getComponent('2'))])).toBe(true)
+  })
+
+  it('translates the wire when both components move, keeping its shape', () => {
+    load()
+    schematicStore.moveCells(['2', '3'], 0, 40)
+    expect(wire().points).toEqual([{ x: 60, y: 50 }, { x: 200, y: 50 }])
+    expectManhattan(wire().points)
+    const net = buildNetwork(schematicStore.getState())
+    expect(net.pinNode.get('2:2')).toBe(net.pinNode.get('3:1'))
+  })
+
+  it('keeps interior bends put while a single end follows its pin', () => {
+    schematicStore.loadDocument({
+      components: [r1(), r2()],
+      wires: [{ id: '4', points: [{ x: 60, y: 10 }, { x: 130, y: 10 }, { x: 130, y: 80 }, { x: 200, y: 80 }] }]
+    })
+    schematicStore.moveCells(['2'], 0, 40)
+    expect(wire().points).toEqual([
+      { x: 60, y: 50 }, { x: 60, y: 10 }, { x: 130, y: 10 }, { x: 130, y: 80 }, { x: 200, y: 80 }
+    ])
+    expectManhattan(wire().points)
+  })
+
+  it('stays Manhattan for every diagonal drag delta', () => {
+    for (const [dx, dy] of [[20, 40], [-60, 20], [40, -80], [-20, -20], [0, 60], [80, 0]]) {
+      schematicStore.loadDocument({
+        components: [r1(), r2()],
+        wires: [{ id: '4', points: [{ x: 60, y: 10 }, { x: 130, y: 10 }, { x: 130, y: 80 }, { x: 200, y: 80 }] }]
+      })
+      schematicStore.moveCells(['2'], dx, dy)
+      expectManhattan(wire().points)
+      // The dragged pin still owns the wire end.
+      expect(wire().points[0]).toEqual({ x: 60 + dx, y: 10 + dy })
+    }
+  })
+
+  it('does not leave a zero-length stub when the elbow lands on the moved end', () => {
+    load()
+    schematicStore.moveCells(['2'], 0, 40)
+    const pts = wire().points
+    for (let i = 1; i < pts.length; i++) {
+      expect(pts[i]).not.toEqual(pts[i - 1])
+    }
+  })
+
+  it('stays connected across a move when the drag is undone', () => {
+    load()
+    schematicStore.moveCells(['2'], 0, 40)
+    schematicStore.undo()
+    expect(wire().points).toEqual([{ x: 60, y: 10 }, { x: 200, y: 10 }])
+  })
+})
+
+describe('endpoint welding onto off-grid pins', () => {
+  // Component parked off-grid: pins land at (3, 17) and (63, 17)
+  const oddR = () => ({ ...resistor('2', 3, 7), pins: resistor('2', 3, 7).pins })
+
+  it('welds wire ends dropped near off-grid pins onto their exact coordinates', () => {
+    // Second component also off-grid: pin 1 at (203, 17)
+    const oddR2 = { ...resistor('3', 203, 7) }
+    schematicStore.loadDocument({ components: [oddR(), oddR2], wires: [] })
+    // Raw clicks a few px off each pin; grid snap alone would give (60,20)/(200,20)
+    schematicStore.addWire([{ x: 65, y: 15 }, { x: 201, y: 15 }])
+    const w = schematicStore.getState().wires[0]
+    expect(w.points[0]).toEqual({ x: 63, y: 17 })
+    expect(w.points[w.points.length - 1]).toEqual({ x: 203, y: 17 })
+    const net = buildNetwork(schematicStore.getState())
+    expect(net.pinNode.get('2:2')).toBe(net.pinNode.get('3:1'))
+  })
+
+  it('keeps the welded wire strictly Manhattan via an inserted elbow', () => {
+    schematicStore.loadDocument({ components: [oddR()], wires: [] })
+    schematicStore.addWire([{ x: 65, y: 15 }, { x: 200, y: 15 }])
+    const pts = schematicStore.getState().wires[0].points
+    for (let i = 1; i < pts.length; i++) {
+      expect(segmentAxis(pts[i - 1], pts[i])).not.toBeNull()
+    }
+  })
+
+  it('leaves far-away endpoints grid-snapped', () => {
+    schematicStore.loadDocument({ components: [oddR()], wires: [] })
+    schematicStore.addWire([{ x: 158, y: 101 }, { x: 300, y: 101 }])
+    expect(schematicStore.getState().wires[0].points).toEqual([
+      { x: 160, y: 100 }, { x: 300, y: 100 }
+    ])
+  })
+
+  it('keeps a stretched wire glued to an off-grid pin across a move', () => {
+    schematicStore.loadDocument({ components: [oddR()], wires: [] })
+    schematicStore.addWire([{ x: 65, y: 15 }, { x: 200, y: 20 }])
+    schematicStore.moveCells(['2'], 0, 40)
+    const comp = schematicStore.getComponent('2')
+    const pin2 = pinAbsolutePosition(comp, comp.pins[1])
+    expect(schematicStore.getState().wires[0].points[0]).toEqual({ x: pin2.x, y: pin2.y })
+  })
+})
+
+describe('component obstacle avoidance', () => {
+  const box = { x: 100, y: 0, width: 60, height: 40 }
+
+  it('detects segments crossing a rect body but not edge touches', () => {
+    expect(segIntersectsRect({ x: 80, y: 20 }, { x: 200, y: 20 }, box)).toBe(true)
+    expect(segIntersectsRect({ x: 80, y: 80 }, { x: 200, y: 80 }, box)).toBe(false)
+    // Riding the outline exactly is allowed (pins sit on it)
+    expect(segIntersectsRect({ x: 80, y: 0 }, { x: 200, y: 0 }, box)).toBe(false)
+  })
+
+  it('flips the L direction to route around a component', () => {
+    // HV from (80,20) to (200,60) would cross the box at y=20
+    const corners = routeManhattan({ x: 80, y: 20 }, { x: 200, y: 60 }, 'HV', [box])
+    expect(corners).toEqual([{ x: 80, y: 60 }]) // VH instead
+    expect(pathClear([{ x: 80, y: 20 }, ...corners, { x: 200, y: 60 }], [box])).toBe(true)
+  })
+
+  it('takes a Z detour when both L orientations collide', () => {
+    const wall = { x: 100, y: -100, width: 60, height: 300 }
+    const from = { x: 80, y: 20 }
+    const to = { x: 200, y: 60 }
+    const corners = routeManhattan(from, to, 'HV', [wall])
+    const path = [from, ...corners, to]
+    expect(pathClear(path, [wall])).toBe(true)
+    for (let i = 1; i < path.length; i++) {
+      expect(segmentAxis(path[i - 1], path[i])).not.toBeNull()
+    }
+  })
+
+  it('still returns a route when no clear path exists', () => {
+    const cage = { x: -1000, y: -1000, width: 2000, height: 2000 }
+    expect(routeManhattan({ x: 0, y: 0 }, { x: 40, y: 60 }, 'HV', [cage]))
+      .toEqual([{ x: 40, y: 0 }])
+  })
+
+  it('drag stretch elbow dodges a component in its way', () => {
+    // r3 sits right where the default vertical stub (x=60, y 10..90) would run
+    const r3 = { ...resistor('5', 30, 30), id: '5' } // bbox (30,30,60,20)
+    schematicStore.loadDocument({
+      components: [resistor('2', 0, 0), resistor('3', 200, 0), r3],
+      wires: [{ id: '4', points: [{ x: 60, y: 10 }, { x: 200, y: 10 }] }]
+    })
+    schematicStore.moveCells(['2'], 0, 80)
+    const pts = schematicStore.getState().wires[0].points
+    expect(pts[0]).toEqual({ x: 60, y: 90 }) // still on the dragged pin
+    expect(pathClear(pts, [componentBBox(r3)])).toBe(true)
+    for (let i = 1; i < pts.length; i++) {
+      expect(segmentAxis(pts[i - 1], pts[i])).not.toBeNull()
+    }
   })
 })

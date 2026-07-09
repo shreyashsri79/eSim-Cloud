@@ -25,11 +25,16 @@ import google from '../static/google.png'
 
 const useStyles = makeStyles((theme) => ({
   paper: {
-    marginTop: theme.spacing(20),
+    marginTop: theme.spacing(10),
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'center',
-    padding: theme.spacing(3, 5)
+    padding: theme.spacing(4, 5),
+    border: `1px solid ${theme.palette.divider}`
+  },
+  title: {
+    fontWeight: 700,
+    letterSpacing: '-0.02em'
   },
   avatar: {
     margin: theme.spacing(1),
@@ -93,13 +98,13 @@ export default function SignUp () {
 
   return (
     <Container component="main" maxWidth="xs">
-      <Card className={classes.paper}>
+      <Card className={classes.paper} elevation={0}>
         <Avatar className={classes.avatar}>
           <LockOutlinedIcon />
         </Avatar>
 
-        <Typography component="h1" variant="h5">
-          {showOtpForm ? 'Verify Email' : 'Register | Sign Up'}
+        <Typography component="h1" variant="h5" className={classes.title}>
+          {showOtpForm ? 'Verify email' : 'Create your account'}
         </Typography>
 
         {/* Display's error messages while signing in */}
@@ -180,12 +185,13 @@ export default function SignUp () {
               variant="contained"
               color="primary"
               type="submit"
+              disableElevation
               className={classes.submit}
               disabled={!accept}
             >
               Sign Up
             </Button>
-            <Typography variant="body2" color="secondary" align="center" >Or</Typography>
+            <Typography variant="body2" color="textSecondary" align="center" >Or</Typography>
 
             {/* Google oAuth Sign Up option */}
             <Button

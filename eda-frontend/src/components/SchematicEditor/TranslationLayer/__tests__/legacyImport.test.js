@@ -13,6 +13,7 @@ import { readKicadSchematic, normalizeLegacyName } from '../../Helper/KiCadFileU
 import { extractLegacyNets } from '../legacyNets'
 import { wirePointGroups } from '../autoWire'
 import { schematicStore } from '../../Canvas/schematicStore'
+import { compileNetlist } from '../../Canvas/dsuNetlist'
 
 const RC_SCH = `EESchema Schematic File Version 2
 LIBS:RC-rescue
@@ -240,5 +241,46 @@ describe('wirePointGroups', () => {
   it('skips single-point and empty groups', () => {
     expect(wirePointGroups([[], [{ x: 0, y: 0 }]])).toBe(0)
     expect(schematicStore.getState().wires).toHaveLength(0)
+  })
+})
+
+describe('netlist compilation of virtual symbols', () => {
+  it('never emits PWR_FLAG (FLG) — a bare FLG line segfaults ngspice', () => {
+    const doc = {
+      components: [
+        {
+          id: '10',
+          name: 'R',
+          symbol: 'R',
+          x: 0,
+          y: 0,
+          width: 40,
+          height: 40,
+          rotation: 0,
+          properties: { VALUE: '1k' },
+          pins: [
+            { number: '1', name: '~', type: 'passive', dx: 0, dy: 20 },
+            { number: '2', name: '~', type: 'passive', dx: 40, dy: 20 }
+          ]
+        },
+        {
+          id: '11',
+          name: 'PWR_FLAG',
+          symbol: 'FLG',
+          x: 100,
+          y: 0,
+          width: 20,
+          height: 20,
+          rotation: 0,
+          properties: {},
+          pins: [{ number: '1', name: 'pwr', type: 'power_in', dx: 0, dy: 20 }]
+        }
+      ],
+      wires: [{ id: '20', points: [{ x: 40, y: 20 }, { x: 100, y: 20 }] }]
+    }
+    const compiled = compileNetlist(doc)
+    expect(compiled.main).toContain('R1')
+    expect(compiled.main).not.toContain('FLG')
+    expect(compiled.componentlist).not.toContain('FLG1')
   })
 })

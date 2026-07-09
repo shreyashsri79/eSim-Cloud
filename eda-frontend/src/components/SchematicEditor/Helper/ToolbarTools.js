@@ -211,7 +211,7 @@ export function GenerateDetailedCompList () {
   const compiled = annotate()
   const netlist = []
   for (const comp of compiled.annotated) {
-    if (comp.symbol === 'PWR' || comp.symbol === 'GND') continue
+    if (comp.symbol === 'PWR' || comp.symbol === 'GND' || comp.symbol === 'FLG') continue
     netlist.push({
       name: comp.properties.PREFIX,
       value: comp.properties.VALUE,

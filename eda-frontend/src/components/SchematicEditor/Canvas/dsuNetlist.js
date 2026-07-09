@@ -233,7 +233,7 @@ function wireTouchIndex (doc) {
 export function assignPrefixes (components) {
   const counters = {}
   return components.map((comp) => {
-    if (comp.symbol === 'PWR' || comp.symbol === 'GND') return comp
+    if (comp.symbol === 'PWR' || comp.symbol === 'GND' || comp.symbol === 'FLG') return comp
     const sym = comp.symbol || 'U'
     counters[sym] = (counters[sym] || 0) + 1
     const prefix = sym + counters[sym]
@@ -257,7 +257,10 @@ export function compileNetlist (doc) {
   const componentlist = []
 
   for (const comp of annotated) {
-    if (comp.symbol === 'PWR' || comp.symbol === 'GND') continue
+    // PWR/GND anchor nets, FLG is KiCad's PWR_FLAG (an ERC marker) — none
+    // are devices. An emitted "FLG1 <node>" line reads as a malformed
+    // current-controlled source and segfaults ngspice.
+    if (comp.symbol === 'PWR' || comp.symbol === 'GND' || comp.symbol === 'FLG') continue
     const props = comp.properties || {}
     const prefix = props.PREFIX || comp.symbol
 

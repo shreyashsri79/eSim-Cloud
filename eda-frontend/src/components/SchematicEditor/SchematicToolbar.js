@@ -87,6 +87,7 @@ import {
 import CreateProject from '../Project/CreateProject'
 import api from '../../utils/Api'
 import { importSCHFile } from './Helper/KiCadFileUtils'
+import { importKicadSchFile } from './TranslationLayer/importKicadSch'
 import SubmitResults from '../LTI/SubmitResults'
 
 // Req for Development
@@ -742,12 +743,28 @@ export default function SchematicToolbar ({
   const handleKicadFileUpload = () => {
     const fileSelector = document.createElement('input')
     fileSelector.setAttribute('type', 'file')
-    fileSelector.setAttribute('accept', '.sch')
+    fileSelector.setAttribute('accept', '.sch,.kicad_sch')
     fileSelector.click()
     fileSelector.addEventListener('change', function (event) {
       var reader = new FileReader()
       var filename = event.target.files[0].name
-      if (filename.slice(filename.length - 3) === 'sch') {
+      if (filename.endsWith('.kicad_sch')) {
+        reader.onload = async (e) => {
+          try {
+            const summary = await importKicadSchFile(e.target.result)
+            let msg = `Imported ${summary.placed} components, ${summary.wired} wires (${summary.nets} nets).`
+            if (summary.skipped.length) {
+              msg += ` Not in library: ${summary.skipped.join(', ')}`
+            }
+            setMessage(msg)
+          } catch (err) {
+            console.error('KiCad import failed', err)
+            setMessage('Could not import KiCad schematic: ' + err.message)
+          }
+          handleSnacClick()
+        }
+        reader.readAsText(event.target.files[0])
+      } else if (filename.endsWith('.sch')) {
         reader.onload = async (e) => {
           importSCHFile(e.target.result)
         }

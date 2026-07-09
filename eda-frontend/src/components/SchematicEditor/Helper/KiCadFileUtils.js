@@ -22,6 +22,7 @@ import { snapPoint, pinAbsolutePosition } from '../Canvas/geometry'
 import { extractLegacyNets } from '../TranslationLayer/legacyNets'
 import { wirePointGroups } from '../TranslationLayer/autoWire'
 import { parseLegacyLib, legacyPinPosition, buildPlaceholder } from '../TranslationLayer/legacyLib'
+import { getStandardDefs } from '../TranslationLayer/standardLibs'
 
 // orientation matrix [x1, y1, x2, y2] (KiCad defined)
 // used for defining rotation and x mirrored states
@@ -241,13 +242,32 @@ export function placeholderProperties (def, reference) {
   return props
 }
 
-/** Cache-lib def for a component, trying raw and rescue-stripped names */
-function defForComponent (defs, comp) {
+/**
+ * Symbol def for a component, trying the raw and rescue-stripped names, then
+ * case-insensitively (the .sch parser lower-cases names: 'sine' must find
+ * 'DEF SINE'). `defs.lcIndex` is built once per import by buildDefsIndex.
+ */
+export function defForComponent (defs, comp) {
   if (!defs) return null
-  return defs.get(comp.rawName) ||
-    defs.get(comp.componentName) ||
-    defs.get(comp.rawName.replace(/-RESCUE-.*$/i, '')) ||
-    null
+  const stripped = comp.rawName.replace(/-RESCUE-.*$/i, '')
+  const direct = defs.get(comp.rawName) || defs.get(comp.componentName) || defs.get(stripped)
+  if (direct) return direct
+  const lc = defs.lcIndex
+  if (!lc) return null
+  return lc.get(comp.rawName.toLowerCase()) || lc.get(stripped.toLowerCase()) || null
+}
+
+/** Merge def maps (later maps win) and attach a lowercase lookup index */
+export function buildDefsIndex (...maps) {
+  const defs = new Map()
+  for (const m of maps) {
+    if (!m) continue
+    for (const [name, def] of m) defs.set(name, def)
+  }
+  const lcIndex = new Map()
+  for (const [name, def] of defs) lcIndex.set(name.toLowerCase(), def)
+  defs.lcIndex = lcIndex
+  return defs
 }
 
 /**
@@ -381,10 +401,13 @@ const loadComponents = async (instructions, defs) => {
 
 /**
  * @param {string} fileContents .sch text
- * @param {string} [cacheLibContents] optional -cache.lib text for exact pins
+ * @param {string} [cacheLibContents] optional -cache.lib text; overlays the
+ *        bundled standard libraries for project-specific symbols
  */
-export function importSCHFile (fileContents, cacheLibContents) {
+export async function importSCHFile (fileContents, cacheLibContents) {
   const instructions = readKicadSchematic(fileContents)
-  const defs = cacheLibContents ? parseLegacyLib(cacheLibContents) : null
-  return loadComponents(instructions, defs)
+  const standardDefs = await getStandardDefs()
+  const cacheDefs = cacheLibContents ? parseLegacyLib(cacheLibContents) : null
+  const defs = buildDefsIndex(standardDefs, cacheDefs)
+  return loadComponents(instructions, defs.size > 0 ? defs : null)
 }

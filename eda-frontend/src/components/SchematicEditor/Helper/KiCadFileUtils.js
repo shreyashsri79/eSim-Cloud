@@ -21,6 +21,7 @@ import { schematicStore } from '../Canvas/schematicStore'
 import { snapPoint, pinAbsolutePosition } from '../Canvas/geometry'
 import { extractLegacyNets } from '../TranslationLayer/legacyNets'
 import { wirePointGroups } from '../TranslationLayer/autoWire'
+import { parseLegacyLib, legacyPinPosition, buildPlaceholder } from '../TranslationLayer/legacyLib'
 
 // orientation matrix [x1, y1, x2, y2] (KiCad defined)
 // used for defining rotation and x mirrored states
@@ -123,6 +124,7 @@ export const readKicadSchematic = (text) => {
           component.rotation = rotation
           component.mirrorX = mirrorX
           component.mirrorY = mirrorY
+          component.matrix = compOrient.slice(0, 4) // raw legacy transform
         }
         while (textSplit[i].split(' ')[0] !== '$EndComp') {
           i++
@@ -219,54 +221,112 @@ async function resolveLegacyComponent (comp, cache, config) {
   return result
 }
 
+/** Cache-lib def for a component, trying raw and rescue-stripped names */
+function defForComponent (defs, comp) {
+  if (!defs) return null
+  return defs.get(comp.rawName) ||
+    defs.get(comp.componentName) ||
+    defs.get(comp.rawName.replace(/-RESCUE-.*$/i, '')) ||
+    null
+}
+
+/**
+ * Net points carry (componentId, pin number, pin index); wiring happens at
+ * the pins of the *placed* symbol, looked up by number with an index
+ * fallback for symbols the library numbers differently.
+ */
+function placedPinPoint (netPoint, placedById) {
+  const comp = placedById.get(netPoint.componentId)
+  if (!comp || !comp.pins || comp.pins.length === 0) return null
+  let pin = comp.pins.find((p) => String(p.number) === String(netPoint.pin))
+  if (!pin && netPoint.idx != null) pin = comp.pins[netPoint.idx]
+  if (!pin) return null
+  return pinAbsolutePosition(comp, pin)
+}
+
 /**
  * Resolve and place the components, then reconstruct connectivity from the
  * original wires/junctions and re-route every net between the placed pins.
+ *
+ * With a -cache.lib the original pin positions are exact (legacyPinPosition),
+ * so netlist extraction has zero ambiguity and unresolved components get a
+ * placeholder symbol with the exact pin layout instead of being dropped.
+ * Without it, connectivity falls back to proximity matching of the placed
+ * pins against the original wires.
  */
-const loadComponents = async (instructions) => {
+const loadComponents = async (instructions, defs) => {
   const token = store.getState().authReducer.token
   const config = { headers: { 'Content-Type': 'application/json' } }
   if (token) { config.headers.Authorization = `Token ${token}` }
 
   const cache = new Map()
-  const placedPins = []
+  const netPins = [] // fed to extractLegacyNets
+  const placedById = new Map()
   const skipped = []
+  const placeholders = []
 
   for (const comp of instructions.components) {
+    const def = defForComponent(defs, comp)
     const resolved = await resolveLegacyComponent(comp, cache, config)
-    if (!resolved) {
+
+    let placed = null
+    if (resolved) {
+      const { compData, schema } = resolved
+      const rotated = (comp.rotation / 90) % 2 !== 0
+      const w = rotated ? schema.height : schema.width
+      const h = rotated ? schema.width : schema.height
+      // KiCad stores the component centre; the canvas stores the top-left
+      const topLeft = snapPoint({ x: comp.x - w / 2, y: comp.y - h / 2 })
+      const id = schematicStore.addComponent({
+        name: (compData.name || '').toUpperCase(),
+        symbol: (compData.symbol_prefix || '').toUpperCase(),
+        x: topLeft.x,
+        y: topLeft.y,
+        width: schema.width,
+        height: schema.height,
+        rotation: comp.rotation || 0,
+        svgPath: compData.svg_path,
+        compObject: compData,
+        properties: initialProperties(compData, ComponentParameters),
+        pins: schema.pins.map((pin) => ({
+          number: pin.number,
+          name: pin.name,
+          type: pin.type,
+          dx: pin.dx,
+          dy: pin.dy
+        }))
+      })
+      placed = schematicStore.getComponent(id)
+    } else if (def) {
+      // Not in the library — place an exact-pin placeholder from the cache lib
+      const ph = buildPlaceholder(comp, def)
+      const id = schematicStore.addComponent({
+        ...ph,
+        symbol: def.reference.replace(/^#/, '') || 'U',
+        rotation: 0, // transform baked into the pin offsets
+        compObject: { name: def.name, placeholder: true },
+        properties: { NAME: (comp.reference || def.name).toUpperCase() }
+      })
+      placed = schematicStore.getComponent(id)
+      placeholders.push((comp.reference || '?') + ' (' + comp.rawName + ')')
+    } else {
       skipped.push((comp.reference || '?') + ' (' + comp.rawName + ')')
       continue
     }
-    const { compData, schema } = resolved
-    const rotated = (comp.rotation / 90) % 2 !== 0
-    const w = rotated ? schema.height : schema.width
-    const h = rotated ? schema.width : schema.height
-    // KiCad stores the component centre; the canvas stores the top-left
-    const topLeft = snapPoint({ x: comp.x - w / 2, y: comp.y - h / 2 })
-    const id = schematicStore.addComponent({
-      name: (compData.name || '').toUpperCase(),
-      symbol: (compData.symbol_prefix || '').toUpperCase(),
-      x: topLeft.x,
-      y: topLeft.y,
-      width: schema.width,
-      height: schema.height,
-      rotation: comp.rotation || 0,
-      svgPath: compData.svg_path,
-      compObject: compData,
-      properties: initialProperties(compData, ComponentParameters),
-      pins: schema.pins.map((pin) => ({
-        number: pin.number,
-        name: pin.name,
-        type: pin.type,
-        dx: pin.dx,
-        dy: pin.dy
-      }))
-    })
-    const placed = schematicStore.getComponent(id)
-    for (const pin of placed.pins) {
-      const p = pinAbsolutePosition(placed, pin)
-      placedPins.push({ x: p.x, y: p.y, componentId: placed.id, pin: pin.number })
+    placedById.set(placed.id, placed)
+
+    if (def) {
+      // Exact: the original sheet position of every pin, straight from the lib
+      def.pins.forEach((pin, idx) => {
+        const p = legacyPinPosition(comp, pin)
+        netPins.push({ x: p.x, y: p.y, componentId: placed.id, pin: pin.number, idx })
+      })
+    } else {
+      // Fuzzy: fall back to the placed symbol's pins (proximity matching)
+      placed.pins.forEach((pin, idx) => {
+        const p = pinAbsolutePosition(placed, pin)
+        netPins.push({ x: p.x, y: p.y, componentId: placed.id, pin: pin.number, idx })
+      })
     }
   }
 
@@ -277,19 +337,28 @@ const loadComponents = async (instructions) => {
     })),
     junctions: instructions.connections,
     labels: instructions.labels,
-    pins: placedPins
+    pins: netPins
   })
-  const wired = wirePointGroups(nets.map((n) => n.points))
+
+  const groups = nets.map((n) =>
+    n.points.map((pt) => placedPinPoint(pt, placedById)).filter(Boolean))
+  const wired = wirePointGroups(groups)
 
   return {
-    placed: instructions.components.length - skipped.length,
+    placed: placedById.size,
+    placeholders,
     skipped,
     nets: nets.filter((n) => n.points.length >= 2).length,
     wired
   }
 }
 
-export function importSCHFile (fileContents) {
+/**
+ * @param {string} fileContents .sch text
+ * @param {string} [cacheLibContents] optional -cache.lib text for exact pins
+ */
+export function importSCHFile (fileContents, cacheLibContents) {
   const instructions = readKicadSchematic(fileContents)
-  return loadComponents(instructions)
+  const defs = cacheLibContents ? parseLegacyLib(cacheLibContents) : null
+  return loadComponents(instructions, defs)
 }

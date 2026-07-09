@@ -743,31 +743,49 @@ export default function SchematicToolbar ({
   const handleKicadFileUpload = () => {
     const fileSelector = document.createElement('input')
     fileSelector.setAttribute('type', 'file')
-    fileSelector.setAttribute('accept', '.sch,.kicad_sch')
+    // Legacy .sch may bring its -cache.lib along for exact pins/placeholders
+    fileSelector.setAttribute('accept', '.sch,.kicad_sch,.lib')
+    fileSelector.setAttribute('multiple', 'multiple')
     fileSelector.click()
-    fileSelector.addEventListener('change', function (event) {
-      var reader = new FileReader()
-      var filename = event.target.files[0].name
-      const importer = filename.endsWith('.kicad_sch')
-        ? importKicadSchFile
-        : (filename.endsWith('.sch') ? importSCHFile : null)
-      if (importer) {
-        reader.onload = async (e) => {
-          try {
-            const summary = await importer(e.target.result)
-            let msg = `Imported ${summary.placed} components, ${summary.wired} wires (${summary.nets} nets).`
-            if (summary.skipped.length) {
-              msg += ` Not in library: ${summary.skipped.join(', ')}`
-            }
-            setMessage(msg)
-          } catch (err) {
-            console.error('KiCad import failed', err)
-            setMessage('Could not import KiCad schematic: ' + err.message)
-          }
-          handleSnacClick()
+    fileSelector.addEventListener('change', async function (event) {
+      const files = [...event.target.files]
+      const readText = (f) => new Promise((resolve, reject) => {
+        const r = new FileReader()
+        r.onload = (e) => resolve(e.target.result)
+        r.onerror = reject
+        r.readAsText(f)
+      })
+      const schV6 = files.find((f) => f.name.endsWith('.kicad_sch'))
+      const schLegacy = files.find((f) => f.name.endsWith('.sch'))
+      const cacheLib = files.find((f) => f.name.endsWith('.lib'))
+      try {
+        let summary = null
+        if (schV6) {
+          summary = await importKicadSchFile(await readText(schV6))
+        } else if (schLegacy) {
+          summary = await importSCHFile(
+            await readText(schLegacy),
+            cacheLib ? await readText(cacheLib) : undefined
+          )
+        } else {
+          return
         }
-        reader.readAsText(event.target.files[0])
+        let msg = `Imported ${summary.placed} components, ${summary.wired} wires (${summary.nets} nets).`
+        if (summary.placeholders && summary.placeholders.length) {
+          msg += ` Placeholders (not in library): ${summary.placeholders.join(', ')}.`
+        }
+        if (summary.skipped.length) {
+          msg += ` Skipped: ${summary.skipped.join(', ')}.`
+          if (schLegacy && !cacheLib) {
+            msg += ' Tip: select the project\'s -cache.lib together with the .sch to import these as placeholders.'
+          }
+        }
+        setMessage(msg)
+      } catch (err) {
+        console.error('KiCad import failed', err)
+        setMessage('Could not import KiCad schematic: ' + err.message)
       }
+      handleSnacClick()
     })
   }
 

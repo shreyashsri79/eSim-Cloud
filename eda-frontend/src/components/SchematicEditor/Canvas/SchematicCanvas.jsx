@@ -26,6 +26,11 @@ const WIRE_SELECTED = '#1976d2'
 const PIN_COLOR = '#d32f2f'
 const JUNCTION_COLOR = '#004d40'
 
+/** Library svgs are repo-relative; import placeholders are data URIs */
+function svgHref (path) {
+  return path && path.startsWith('data:') ? path : '../' + path
+}
+
 /** Subscribe to the committed schematic document */
 function useSchematicState () {
   const [, force] = useReducer((c) => c + 1, 0)
@@ -123,7 +128,7 @@ const ComponentItem = React.memo(function ComponentItem ({ comp, selected, onMou
         style={{ cursor: 'move' }}
       >
         <rect x={-2} y={-2} width={w + 4} height={h + 4} fill="transparent" />
-        <image href={'../' + comp.svgPath} x={0} y={0} width={w} height={h} preserveAspectRatio="xMidYMid meet" />
+        <image href={svgHref(comp.svgPath)} x={0} y={0} width={w} height={h} preserveAspectRatio="xMidYMid meet" />
         {comp.pins.map((pin) => (
           <circle key={pin.number} cx={pin.dx} cy={pin.dy} r={1.8} fill={PIN_COLOR} />
         ))}
@@ -247,7 +252,7 @@ const MiniMap = React.memo(function MiniMap ({ components, wires, view, size }) 
         {components.map((c) => (
           <image
             key={c.id}
-            href={'../' + c.svgPath}
+            href={svgHref(c.svgPath)}
             x={c.x} y={c.y} width={c.width} height={c.height}
             preserveAspectRatio="xMidYMid meet"
             transform={c.rotation
@@ -295,7 +300,7 @@ function InteractionOverlay ({ svgRef }) {
         <g key={item.id} transform={`translate(${dragGhost.dx} ${dragGhost.dy})`} opacity={0.55}>
           {item.kind === 'component' && (
             <image
-              href={'../' + item.comp.svgPath}
+              href={svgHref(item.comp.svgPath)}
               x={item.comp.x} y={item.comp.y}
               width={item.comp.width} height={item.comp.height}
               transform={item.comp.rotation
@@ -315,7 +320,7 @@ function InteractionOverlay ({ svgRef }) {
       ))}
       {placingGhost && placingGhost.kind === 'component' && placingGhost.schema && (
         <image
-          href={'../' + placingGhost.schema.svgPath}
+          href={svgHref(placingGhost.schema.svgPath)}
           x={placingGhost.x - placingGhost.schema.width / 2}
           y={placingGhost.y - placingGhost.schema.height / 2}
           width={placingGhost.schema.width}

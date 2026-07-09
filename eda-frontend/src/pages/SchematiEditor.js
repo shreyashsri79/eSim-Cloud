@@ -129,7 +129,7 @@ export default function SchematiEditor (props) {
           setLtiSimResult={setLtiSimResult}/>}
       />
 
-      <LayoutMain>
+      <LayoutMain noPadding>
         <div className={classes.toolbar} />
         <div style={{ display: 'flex', height: 'calc(100vh - 80px)' }}>
           <div style={{ flex: isSimulate ? 1 : 'none', width: isSimulate ? '50%' : '100%', borderRight: isSimulate ? '2px solid #ccc' : 'none', overflow: 'hidden', height: '100%', position: 'relative' }}>

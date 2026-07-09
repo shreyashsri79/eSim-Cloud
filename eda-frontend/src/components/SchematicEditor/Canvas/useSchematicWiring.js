@@ -77,7 +77,14 @@ export default function useSchematicWiring () {
     if (phaseRef.current === 'idle') setPhase('armed')
   }, [setPhase])
 
-  const exitWireMode = useCallback(() => setPhase('idle'), [setPhase])
+  const exitWireMode = useCallback(() => {
+    // Keep the segments already anchored (start → last pivot); only the
+    // cursor-following preview segment is discarded.
+    if (phaseRef.current === 'drawing' && pointsRef.current.length >= 2) {
+      schematicStore.addWire(pointsRef.current)
+    }
+    setPhase('idle')
+  }, [setPhase])
 
   /** Escape semantics: cancel active draw first, then exit the tool */
   const cancel = useCallback(() => {

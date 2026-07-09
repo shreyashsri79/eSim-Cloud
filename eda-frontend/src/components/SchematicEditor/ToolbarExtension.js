@@ -300,6 +300,13 @@ export function HelpScreen ({ open, close }) {
                   <Typography variant="subtitle1" align='left' style={{ color: '#b3b3b3' }} gutterBottom>
                     Ctrl + V
                   </Typography>
+                  <Divider />
+                  <Typography variant="h6" align='left' gutterBottom>
+                    Toggle MiniMap
+                  </Typography>
+                  <Typography variant="subtitle1" align='left' style={{ color: '#b3b3b3' }} gutterBottom>
+                    M
+                  </Typography>
                 </fieldset>
               </Paper>
             </Grid>

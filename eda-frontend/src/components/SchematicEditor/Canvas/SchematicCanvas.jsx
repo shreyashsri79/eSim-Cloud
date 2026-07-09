@@ -236,27 +236,24 @@ const MiniMap = React.memo(function MiniMap ({ components, wires, view, size }) 
   const ox = (MM_W - bw * scale) / 2 - bounds.minX * scale
   const oy = (MM_H - bh * scale) / 2 - bounds.minY * scale
 
-  // Current viewport in canvas coords
-  const vx = -view.dx / view.s
-  const vy = -view.dy / view.s
-  const vw = size.width / view.s
-  const vh = size.height / view.s
-
   return (
-    <g id="minimap-layer" transform="translate(15 15)" pointerEvents="none">
+    <g id="minimap-layer" transform={`translate(${size.width - MM_W - 15} ${size.height - MM_H - 15})`} pointerEvents="none">
       <rect width={MM_W} height={MM_H} rx={5} fill="#ffffff" stroke="#ccc" opacity={0.92} />
       <g transform={`translate(${ox} ${oy}) scale(${scale})`}>
         {wires.map((w) => (
           <path key={w.id} d={wirePath(w.points)} stroke={WIRE_COLOR} strokeWidth={1.5 / scale} fill="none" />
         ))}
-        {components.map((c) => {
-          const b = componentBBox(c)
-          return <rect key={c.id} x={b.x} y={b.y} width={b.width} height={b.height} fill="#90a4ae" opacity={0.8} />
-        })}
-        <rect
-          x={vx} y={vy} width={vw} height={vh}
-          fill="none" stroke="#1976d2" strokeWidth={2 / scale} opacity={0.9}
-        />
+        {components.map((c) => (
+          <image
+            key={c.id}
+            href={'../' + c.svgPath}
+            x={c.x} y={c.y} width={c.width} height={c.height}
+            preserveAspectRatio="xMidYMid meet"
+            transform={c.rotation
+              ? `rotate(${c.rotation} ${c.x + c.width / 2} ${c.y + c.height / 2})`
+              : undefined}
+          />
+        ))}
       </g>
     </g>
   )
@@ -351,6 +348,7 @@ export default function SchematicCanvas () {
   const state = useSchematicState()
   const wiring = useSchematicWiring()
   const [size, setSize] = React.useState({ width: 800, height: 600 })
+  const [showMiniMap, setShowMiniMap] = React.useState(true)
 
   // Refs for gesture state — never trigger renders
   const gesture = useRef(null) // { type: 'pan'|'drag'|'marquee', ... }
@@ -623,8 +621,14 @@ export default function SchematicCanvas () {
       const key = evt.key
 
       if (!ctrl && !evt.altKey) {
+        if (key === 'm' || key === 'M') {
+          setShowMiniMap(show => !show)
+          return
+        }
         if (key === 'w' || key === 'W') {
-          wiring.enterWireMode()
+          // W toggles the wire tool
+          if (wiring.isActive()) wiring.exitWireMode()
+          else wiring.enterWireMode()
           return
         }
         if (key === 'Escape') {
@@ -755,7 +759,9 @@ export default function SchematicCanvas () {
         <ProbeLayer probes={state.probes} selection={state.selection} onProbeMouseDown={onProbeMouseDown} />
         <InteractionOverlay svgRef={svgRef} />
       </g>
-      <MiniMap components={state.components} wires={state.wires} view={view} size={size} />
+      {showMiniMap && (
+        <MiniMap components={state.components} wires={state.wires} view={view} size={size} />
+      )}
     </svg>
   )
 }

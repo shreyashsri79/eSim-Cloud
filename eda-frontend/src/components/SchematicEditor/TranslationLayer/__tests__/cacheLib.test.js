@@ -13,7 +13,8 @@
 
 import fs from 'fs'
 import path from 'path'
-import { readKicadSchematic } from '../../Helper/KiCadFileUtils'
+import { readKicadSchematic, placeholderProperties } from '../../Helper/KiCadFileUtils'
+import { adjustModelPolarity } from '../../Helper/SvgParser'
 import { parseLegacyLib, legacyPinPosition, buildPlaceholder } from '../legacyLib'
 import { extractLegacyNets } from '../legacyNets'
 
@@ -98,6 +99,30 @@ describe('buildPlaceholder', () => {
   it('renders as a self-contained data URI (no library svg needed)', () => {
     expect(ph.svgPath.startsWith('data:image/svg+xml')).toBe(true)
     expect(decodeURIComponent(ph.svgPath)).toContain('half_adder')
+  })
+})
+
+describe('placeholder simulation properties', () => {
+  it('a placeholder BJT carries a model card with the right polarity', () => {
+    // eSim_NPN def (reference Q) — a modelless "Q1 c b e" line stops ngspice
+    const def = { name: 'eSim_NPN', reference: 'Q', pins: [], bbox: {} }
+    const props = placeholderProperties(def, 'Q1')
+    expect(props.MODEL).toBe('.model mybjt NPN')
+    expect(props.NAME).toBe('Q1')
+    expect(props.MULTIPLICITY_PARAMETER).toBeDefined()
+  })
+
+  it('defs without ComponentParameters defaults still get a NAME', () => {
+    const def = { name: 'half_adder', reference: 'X', pins: [], bbox: {} }
+    expect(placeholderProperties(def, 'X1')).toMatchObject({ NAME: 'X1' })
+  })
+
+  it('adjustModelPolarity flips only when the name states a polarity', () => {
+    expect(adjustModelPolarity({ MODEL: '.model mybjt PNP' }, 'QNPN').MODEL)
+      .toBe('.model mybjt NPN')
+    expect(adjustModelPolarity({ MODEL: '.model mybjt PNP' }, 'Q2SA1015').MODEL)
+      .toBe('.model mybjt PNP')
+    expect(adjustModelPolarity({}, 'QNPN').MODEL).toBeUndefined()
   })
 })
 

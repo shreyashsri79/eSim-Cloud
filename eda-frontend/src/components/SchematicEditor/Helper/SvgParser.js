@@ -104,6 +104,17 @@ export function fetchSymbolSchema (component) {
 }
 
 /**
+ * The default BJT MODEL card is PNP; flip its polarity when the symbol's
+ * name states it (QNPN, eSim_NPN, ...). Mutates and returns props.
+ */
+export function adjustModelPolarity (props, name) {
+  if (!props.MODEL) return props
+  if (/NPN/i.test(name)) props.MODEL = props.MODEL.replace(/\bPNP\b/i, 'NPN')
+  else if (/PNP/i.test(name)) props.MODEL = props.MODEL.replace(/\bNPN\b/i, 'PNP')
+  return props
+}
+
+/**
  * Build the initial simulation properties for a component, mirroring the
  * legacy ComponentParameters lookup (special-cased V and I sources).
  */
@@ -119,5 +130,5 @@ export function initialProperties (component, ComponentParameters) {
     props = Object.assign({}, ComponentParameters[symbol])
   }
   props.NAME = name
-  return props
+  return adjustModelPolarity(props, name)
 }

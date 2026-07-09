@@ -15,7 +15,7 @@
 
 import store from '../../../redux/store'
 import api from '../../../utils/Api'
-import { fetchSymbolSchema, initialProperties } from './SvgParser'
+import { fetchSymbolSchema, initialProperties, adjustModelPolarity } from './SvgParser'
 import ComponentParameters from './ComponentParametersData'
 import { schematicStore } from '../Canvas/schematicStore'
 import { snapPoint, pinAbsolutePosition } from '../Canvas/geometry'
@@ -198,6 +198,12 @@ async function resolveLegacyComponent (comp, cache, config) {
     attempts.push(`components/?component_library__library_name__icontains=${comp.library}&name__icontains=${comp.componentName}`)
   }
   attempts.push(`components/?name__icontains=${comp.componentName}`)
+  // eSim device symbols are named eSim_<device> but the library carries the
+  // KiCad-derived names (eSim_NPN → QNPN), so retry on the bare device name.
+  const esimStripped = comp.componentName.replace(/^esim_/, '')
+  if (esimStripped !== comp.componentName && esimStripped.length > 1) {
+    attempts.push(`components/?name__icontains=${esimStripped}`)
+  }
   if (comp.componentName.indexOf('_') !== -1) {
     const [name, library] = comp.componentName.split('_')
     attempts.push(`components/?component_library__library_name__icontains=${library}&name__icontains=${name}`)
@@ -219,6 +225,20 @@ async function resolveLegacyComponent (comp, cache, config) {
   }
   cache.set(cacheKey, result)
   return result
+}
+
+/**
+ * Simulation properties for a placeholder: the ComponentParameters defaults
+ * of the def's reference prefix (so a placeholder BJT still carries a usable
+ * .model card instead of producing a modelless Q line), with the model
+ * polarity taken from the symbol name.
+ */
+export function placeholderProperties (def, reference) {
+  const sym = (def.reference || 'U').replace(/^#/, '')
+  const props = adjustModelPolarity(
+    Object.assign({}, ComponentParameters[sym] || {}), def.name)
+  props.NAME = (reference || def.name).toUpperCase()
+  return props
 }
 
 /** Cache-lib def for a component, trying raw and rescue-stripped names */
@@ -311,7 +331,7 @@ const loadComponents = async (instructions, defs) => {
         symbol: virtual ? 'PWR' : (def.reference || 'U'),
         rotation: 0, // transform baked into the pin offsets
         compObject: { name: def.name, placeholder: true },
-        properties: { NAME: (comp.reference || def.name).toUpperCase() }
+        properties: placeholderProperties(def, comp.reference)
       })
       placed = schematicStore.getComponent(id)
       placeholders.push((comp.reference || '?') + ' (' + comp.rawName + ')')

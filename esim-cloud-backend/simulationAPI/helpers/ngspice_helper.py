@@ -63,7 +63,17 @@ def ExecNetlist(filepath, file_id):
             logger.info('Ran ngSpice')
 
         logger.info("Reading Output")
-        if os.path.isfile(current_dir+'/data.txt'):
+        # When the analysis aborts (e.g. "Fatal error: instance v1 is a
+        # shorted VSRC"), the .control block still executes and `print all`
+        # dumps ngspice's *constants* plot (e, pi, boltz, ...) into data.txt.
+        # That parses as a plausible table and used to be reported as a
+        # successful result — surface the fatal error instead.
+        err_txt = (stderr or b'').decode('utf-8', errors='replace')
+        run_aborted = ('Fatal error' in err_txt or
+                       'simulation(s) aborted' in err_txt)
+        if run_aborted:
+            output = {'fail': err_txt, 'error_help': parse_ngspice_error(err_txt)}
+        elif os.path.isfile(current_dir+'/data.txt'):
             output = extract_data_from_ngspice_output(current_dir+'/data.txt')
             if output["data"]:
                 """

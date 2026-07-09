@@ -1,7 +1,16 @@
 /* eslint-disable camelcase */
 /**
- * KiCadFileUtils.js — imports native KiCad .sch files by mapping their
- * properties straight onto the JSON canvas state (components + wires).
+ * KiCadFileUtils.js — imports legacy KiCad v4/v5 .sch files.
+ *
+ * Placement resolves each component against the library API; wiring is
+ * netlist-driven: the original wire geometry is only used to reconstruct
+ * pin-to-pin connectivity (TranslationLayer/legacyNets), then every net is
+ * re-routed between the pins of the placed library symbols
+ * (TranslationLayer/autoWire). Copying the file's wires verbatim is what
+ * used to produce stubs that miss the pins — the legacy symbols' pin
+ * positions never match the local library's.
+ *
+ * KiCad v6+ (.kicad_sch) files are handled by TranslationLayer/importKicadSch.
  */
 
 import store from '../../../redux/store'
@@ -9,7 +18,9 @@ import api from '../../../utils/Api'
 import { fetchSymbolSchema, initialProperties } from './SvgParser'
 import ComponentParameters from './ComponentParametersData'
 import { schematicStore } from '../Canvas/schematicStore'
-import { snapPoint } from '../Canvas/geometry'
+import { snapPoint, pinAbsolutePosition } from '../Canvas/geometry'
+import { extractLegacyNets } from '../TranslationLayer/legacyNets'
+import { wirePointGroups } from '../TranslationLayer/autoWire'
 
 // orientation matrix [x1, y1, x2, y2] (KiCad defined)
 // used for defining rotation and x mirrored states
@@ -25,8 +36,17 @@ const defScale = 5
 /** Legacy bootstrap hook — the declarative canvas needs no graph handle. */
 export default function KiCadFileUtils () {}
 
+/**
+ * Normalise a legacy symbol name for library lookup.
+ * KiCad's rescue pass renames symbols to "<name>-RESCUE-<sheet>"; the suffix
+ * never exists in the component library.
+ */
+export function normalizeLegacyName (raw) {
+  return String(raw || '').replace(/-RESCUE-.*$/i, '').trim().toLowerCase()
+}
+
 // Reads KiCad .sch files and returns the schematic as instructions
-const readKicadSchematic = (text) => {
+export const readKicadSchematic = (text) => {
   const textSplit = text.split('\n')
   let i = 0
   const instructions = {}
@@ -55,6 +75,7 @@ const readKicadSchematic = (text) => {
   instructions.components = []
   instructions.wires = []
   instructions.connections = []
+  instructions.labels = []
   let component = {}
   let wire = {}
   let connection = {}
@@ -65,14 +86,14 @@ const readKicadSchematic = (text) => {
         i += 1
         component = {}
         splt = textSplit[i].split(' ')
+        component.rawName = splt[1]
+        component.reference = (splt[2] || '').trim()
         if (splt[1].indexOf(':') !== -1) {
           component.library = splt[1].split(':')[0].trim().toLowerCase()
-          component.componentName = splt[1].split(':')[1].trim().toLowerCase()
-        } else if (splt[1].indexOf('_') !== -1) {
-          component.componentName = splt[1].split('_')[0].toLowerCase()
-          component.library = splt[1].split('_')[1].toLowerCase()
+          component.componentName = normalizeLegacyName(splt[1].split(':')[1])
         } else {
-          component.componentName = splt[1].toLowerCase()
+          component.componentName = normalizeLegacyName(splt[1])
+          component.library = null
         }
         i += 2 // skips identifier line
         splt = textSplit[i].split(' ')
@@ -130,6 +151,20 @@ const readKicadSchematic = (text) => {
         }
         instructions.connections.push(connection)
         break
+      case 'Text':
+        // "Text GLabel X Y ..." / "Text Label X Y ..." — the text sits on
+        // the following line. Labels only name nets; no geometry imported.
+        if (splt[1] === 'GLabel' || splt[1] === 'Label' || splt[1] === 'HLabel') {
+          const parts = splt.filter((e) => e.length !== 0)
+          instructions.labels.push({
+            kind: parts[1],
+            x: parseInt(parts[2]) / defScale,
+            y: parseInt(parts[3]) / defScale,
+            text: (textSplit[i + 1] || '').trim()
+          })
+          i += 1
+        }
+        break
       default:
         break
     }
@@ -147,66 +182,114 @@ const findApprComp = (compDataList, key) => {
 }
 
 /**
- * Resolve KiCad component references against the library API and push
- * component descriptors + wires into the canvas state.
+ * Library lookup with fallbacks. The old importer split names containing an
+ * underscore into name + library ("plot_v1" → "plot" in library "v1"), which
+ * broke every component whose real name contains an underscore — so the full
+ * name is tried first, then the scoped and split variants.
  */
-const loadComponents = async (components, wires) => {
+async function resolveLegacyComponent (comp, cache, config) {
+  const cacheKey = (comp.library || '') + ':' + comp.componentName
+  if (cache.has(cacheKey)) return cache.get(cacheKey)
+
+  const attempts = []
+  if (comp.library) {
+    attempts.push(`components/?component_library__library_name__icontains=${comp.library}&name__icontains=${comp.componentName}`)
+  }
+  attempts.push(`components/?name__icontains=${comp.componentName}`)
+  if (comp.componentName.indexOf('_') !== -1) {
+    const [name, library] = comp.componentName.split('_')
+    attempts.push(`components/?component_library__library_name__icontains=${library}&name__icontains=${name}`)
+  }
+
+  let result = null
+  for (const url of attempts) {
+    try {
+      const res = await api.get(url, config)
+      if (res.data && res.data.length > 0) {
+        const compData = findApprComp(res.data, comp.componentName)
+        const schema = await fetchSymbolSchema(compData)
+        result = { compData, schema }
+        break
+      }
+    } catch (e) {
+      console.error('Legacy import: lookup failed for', comp.rawName, e)
+    }
+  }
+  cache.set(cacheKey, result)
+  return result
+}
+
+/**
+ * Resolve and place the components, then reconstruct connectivity from the
+ * original wires/junctions and re-route every net between the placed pins.
+ */
+const loadComponents = async (instructions) => {
   const token = store.getState().authReducer.token
   const config = { headers: { 'Content-Type': 'application/json' } }
   if (token) { config.headers.Authorization = `Token ${token}` }
 
-  for (const comp of components) {
-    let url
-    if (comp.componentName && comp.library) {
-      url = `components/?component_library__library_name__icontains=${comp.library}&name__icontains=${comp.componentName}`
-    } else {
-      url = `components/?name__icontains=${comp.componentName}`
+  const cache = new Map()
+  const placedPins = []
+  const skipped = []
+
+  for (const comp of instructions.components) {
+    const resolved = await resolveLegacyComponent(comp, cache, config)
+    if (!resolved) {
+      skipped.push((comp.reference || '?') + ' (' + comp.rawName + ')')
+      continue
     }
-    try {
-      const res = await api.get(url, config)
-      if (!res.data || res.data.length === 0) continue
-      const compData = findApprComp(res.data, comp.componentName)
-      const schema = await fetchSymbolSchema(compData)
-      const rotated = (comp.rotation / 90) % 2 !== 0
-      const w = rotated ? schema.height : schema.width
-      const h = rotated ? schema.width : schema.height
-      // KiCad stores the component centre; the canvas stores the top-left
-      const topLeft = snapPoint({ x: comp.x - w / 2, y: comp.y - h / 2 })
-      schematicStore.addComponent({
-        name: (compData.name || '').toUpperCase(),
-        symbol: (compData.symbol_prefix || '').toUpperCase(),
-        x: topLeft.x,
-        y: topLeft.y,
-        width: schema.width,
-        height: schema.height,
-        rotation: comp.rotation || 0,
-        svgPath: compData.svg_path,
-        compObject: compData,
-        properties: initialProperties(compData, ComponentParameters),
-        pins: schema.pins.map((pin) => ({
-          number: pin.number,
-          name: pin.name,
-          type: pin.type,
-          dx: pin.dx,
-          dy: pin.dy
-        }))
-      })
-    } catch (e) {
-      console.error('Failed to import component', comp.componentName, e)
+    const { compData, schema } = resolved
+    const rotated = (comp.rotation / 90) % 2 !== 0
+    const w = rotated ? schema.height : schema.width
+    const h = rotated ? schema.width : schema.height
+    // KiCad stores the component centre; the canvas stores the top-left
+    const topLeft = snapPoint({ x: comp.x - w / 2, y: comp.y - h / 2 })
+    const id = schematicStore.addComponent({
+      name: (compData.name || '').toUpperCase(),
+      symbol: (compData.symbol_prefix || '').toUpperCase(),
+      x: topLeft.x,
+      y: topLeft.y,
+      width: schema.width,
+      height: schema.height,
+      rotation: comp.rotation || 0,
+      svgPath: compData.svg_path,
+      compObject: compData,
+      properties: initialProperties(compData, ComponentParameters),
+      pins: schema.pins.map((pin) => ({
+        number: pin.number,
+        name: pin.name,
+        type: pin.type,
+        dx: pin.dx,
+        dy: pin.dy
+      }))
+    })
+    const placed = schematicStore.getComponent(id)
+    for (const pin of placed.pins) {
+      const p = pinAbsolutePosition(placed, pin)
+      placedPins.push({ x: p.x, y: p.y, componentId: placed.id, pin: pin.number })
     }
   }
 
-  // Each KiCad wire line is a straight segment; the DSU compiler unions
-  // touching segments, so a 1:1 mapping preserves connectivity.
-  for (const w of wires) {
-    schematicStore.addWire([
-      { x: w.startx, y: w.starty },
-      { x: w.endx, y: w.endy }
-    ], { undoable: false })
+  const nets = extractLegacyNets({
+    segments: instructions.wires.map((w) => ({
+      a: { x: w.startx, y: w.starty },
+      b: { x: w.endx, y: w.endy }
+    })),
+    junctions: instructions.connections,
+    labels: instructions.labels,
+    pins: placedPins
+  })
+  const wired = wirePointGroups(nets.map((n) => n.points))
+
+  return {
+    placed: instructions.components.length - skipped.length,
+    skipped,
+    nets: nets.filter((n) => n.points.length >= 2).length,
+    wired
   }
 }
 
 export function importSCHFile (fileContents) {
-  const rawInstr = readKicadSchematic(fileContents)
-  loadComponents([...rawInstr.components], [...rawInstr.wires])
+  const instructions = readKicadSchematic(fileContents)
+  return loadComponents(instructions)
 }

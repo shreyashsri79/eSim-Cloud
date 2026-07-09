@@ -74,7 +74,7 @@ export function instancePins (instance, template) {
 // Union-find over coordinate keys
 // ---------------------------------------------------------------------------
 
-class DSU {
+export class DSU {
   constructor () {
     this.parent = new Map()
   }

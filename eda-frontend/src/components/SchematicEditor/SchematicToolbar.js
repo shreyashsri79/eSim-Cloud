@@ -748,10 +748,13 @@ export default function SchematicToolbar ({
     fileSelector.addEventListener('change', function (event) {
       var reader = new FileReader()
       var filename = event.target.files[0].name
-      if (filename.endsWith('.kicad_sch')) {
+      const importer = filename.endsWith('.kicad_sch')
+        ? importKicadSchFile
+        : (filename.endsWith('.sch') ? importSCHFile : null)
+      if (importer) {
         reader.onload = async (e) => {
           try {
-            const summary = await importKicadSchFile(e.target.result)
+            const summary = await importer(e.target.result)
             let msg = `Imported ${summary.placed} components, ${summary.wired} wires (${summary.nets} nets).`
             if (summary.skipped.length) {
               msg += ` Not in library: ${summary.skipped.join(', ')}`
@@ -762,11 +765,6 @@ export default function SchematicToolbar ({
             setMessage('Could not import KiCad schematic: ' + err.message)
           }
           handleSnacClick()
-        }
-        reader.readAsText(event.target.files[0])
-      } else if (filename.endsWith('.sch')) {
-        reader.onload = async (e) => {
-          importSCHFile(e.target.result)
         }
         reader.readAsText(event.target.files[0])
       }

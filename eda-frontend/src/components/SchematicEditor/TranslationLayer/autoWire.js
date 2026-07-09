@@ -59,29 +59,18 @@ export function mstEdges (points) {
 }
 
 /**
- * Wire up the imported nets. Components must already be committed to the
- * schematic store so the router can see their bounding boxes as obstacles.
+ * Wire each group of canvas points into one net using the editor's router.
+ * Components must already be committed to the schematic store so the router
+ * can see their bounding boxes as obstacles.
  *
- * @param {Array} nets      output of extractNets
- * @param {Map} placedByUuid KiCad instance uuid → placed SchematicComponent
- * @returns {{wired: number, openNets: number}}
+ * @param {Array<Array<{x, y}>>} groups pin positions per net
+ * @returns {number} wires added
  */
-export function autoWireNets (nets, placedByUuid) {
+export function wirePointGroups (groups) {
   const obstacles = schematicStore.getState().components.map(componentBBox)
   let wired = 0
-  let openNets = 0
-
-  for (const net of nets) {
-    const points = []
-    for (const netPin of net.pins) {
-      const p = resolveNetPin(netPin, placedByUuid)
-      if (p) points.push(p)
-    }
-    if (points.length < 2) {
-      if (net.pins.length >= 2) openNets++ // pins existed but components were not resolved
-      continue
-    }
-
+  for (const points of groups) {
+    if (points.length < 2) continue
     for (const [i, j] of mstEdges(points)) {
       const from = points[i]
       const to = points[j]
@@ -91,5 +80,30 @@ export function autoWireNets (nets, placedByUuid) {
       if (id) wired++
     }
   }
-  return { wired, openNets }
+  return wired
+}
+
+/**
+ * Wire up nets from the KiCad v6+ importer (pins referenced by instance uuid
+ * + pin number, resolved against the placed components).
+ *
+ * @param {Array} nets      output of extractNets
+ * @param {Map} placedByUuid KiCad instance uuid → placed SchematicComponent
+ * @returns {{wired: number, openNets: number}}
+ */
+export function autoWireNets (nets, placedByUuid) {
+  const groups = []
+  let openNets = 0
+  for (const net of nets) {
+    const points = []
+    for (const netPin of net.pins) {
+      const p = resolveNetPin(netPin, placedByUuid)
+      if (p) points.push(p)
+    }
+    if (points.length < 2 && net.pins.length >= 2) {
+      openNets++ // pins existed but components were not resolved
+    }
+    groups.push(points)
+  }
+  return { wired: wirePointGroups(groups), openNets }
 }

@@ -97,6 +97,7 @@ const useStyles = makeStyles((theme) => ({
 const navItems = [
   { label: 'Editor', to: '/editor' },
   { label: 'Simulator', to: '/simulator/ngspice' },
+  { label: 'HDL Simulator', to: '/simulator/hdl' },
   { label: 'Gallery', to: '/gallery' },
   { label: 'Projects', to: '/projects' }
 ]

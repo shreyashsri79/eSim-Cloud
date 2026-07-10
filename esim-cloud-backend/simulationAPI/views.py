@@ -1,6 +1,6 @@
 from simulationAPI.serializers import TaskSerializer, \
     simulationSerializer, simulationSaveSerializer
-from simulationAPI.tasks import process_task
+from simulationAPI.tasks import process_task, process_hdl_task
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.views import APIView
@@ -18,13 +18,15 @@ from celery import current_task
 import time
 import math
 import os
+import re
 import logging
 
 
 logger = logging.getLogger(__name__)
 
 
-def saveNetlistDB(task_id, filepath, request):
+def saveNetlistDB(task_id, filepath, request,
+                  default_sim_type="NgSpiceSimulator"):
     current_dir = settings.FILE_STORAGE_ROOT
     filepath = filepath.split('/')[-1]
     os.chdir(current_dir)
@@ -37,7 +39,7 @@ def saveNetlistDB(task_id, filepath, request):
     if request.data.get('simulationType', None):
         simulation_type = request.data['simulationType']
     else:
-        simulation_type = "NgSpiceSimulator"
+        simulation_type = default_sim_type
     if request.data.get('save_id', None):
         if 'gallery' in request.data.get('save_id'):
             save_id = None
@@ -108,6 +110,67 @@ class NetlistUploader(APIView):
                 'details': serializer.data,
             }
             return Response(response_data)
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class HDLUploader(APIView):
+    '''
+    API for HDL source upload (Icarus Verilog / GHDL logic simulation).
+
+    multipart/form-data POST:
+      file          — HDL source file (Verilog testbench or VHDL file)
+      simulator     — 'iverilog' | 'ghdl'
+      stop_time     — optional GHDL --stop-time value (e.g. '1000ns')
+      simulationType— stored in history ('IcarusVerilogSimulator' /
+                      'GhdlSimulator'), defaults from simulator field
+
+    Poll simulation/status/<task_id> for the parsed VCD payload.
+    '''
+    permission_classes = (AllowAny,)
+    parser_classes = (MultiPartParser, FormParser,)
+
+    def post(self, request, *args, **kwargs):
+        logger.info('Got POST for HDL upload')
+        simulator = request.data.get('simulator', 'iverilog')
+        if simulator not in ('iverilog', 'ghdl'):
+            return Response({'error': 'simulator must be iverilog or ghdl'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        stop_time = request.data.get('stop_time', None)
+        if stop_time and not re.match(r'^\d+\s*(fs|ps|ns|us|ms|sec)$',
+                                      stop_time):
+            return Response(
+                {'error': 'stop_time must look like "1000ns"'},
+                status=status.HTTP_400_BAD_REQUEST)
+
+        serializer = TaskSerializer(data=request.data,
+                                    context={'view': self})
+        limits = Limit.objects.all()
+        TIME_LIMIT = limits[0].timeLimit if limits.exists() else 0
+        if serializer.is_valid():
+            serializer.save()
+            saveNetlistDB(
+                serializer.data['task_id'],
+                serializer.data['file'][0]['file'], request,
+                default_sim_type=('IcarusVerilogSimulator'
+                                  if simulator == 'iverilog'
+                                  else 'GhdlSimulator'))
+            task_id = serializer.data['task_id']
+            task_kwargs = {'task_id': str(task_id),
+                           'simulator': simulator,
+                           'stop_time': stop_time}
+            if TIME_LIMIT == 0:
+                celery_task = process_hdl_task.apply_async(
+                    kwargs=task_kwargs, task_id=str(task_id))
+            else:
+                celery_task = process_hdl_task.apply_async(
+                    kwargs=task_kwargs, task_id=str(task_id),
+                    soft_time_limit=TIME_LIMIT)
+
+            return Response({
+                'state': celery_task.state,
+                'details': serializer.data,
+            })
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 

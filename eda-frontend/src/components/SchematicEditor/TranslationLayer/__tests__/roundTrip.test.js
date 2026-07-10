@@ -219,6 +219,19 @@ describe('imported schematic survives save -> reload', () => {
     expect(qLine).toBeTruthy()
     expect(qLine.trim().split(/\s+/)).toHaveLength(5) // q1 c b e <model>
     expect(compiled.models).toMatch(/NPN/i)
+
+    // No source may be shorted: plot probes must not ground their nets
+    // (a 'PWR' probe symbol once collapsed in/out to node 0) and every
+    // V-source's two nodes must differ.
+    for (const line of compiled.main.split('\n')) {
+      if (!/^v/i.test(line)) continue
+      const nodes = line.trim().split(/\s+/).slice(1, 3)
+      expect(nodes[0]).not.toEqual(nodes[1])
+    }
+    // F1 values from the schematic reach the netlist
+    expect(compiled.main).toMatch(/ 200k/)
+    expect(compiled.main).toMatch(/ 40u/)
+    expect(compiled.main).toMatch(/ 1\.5k/)
   })
 
   it('importing a second file replaces the document instead of stacking circuits', async () => {

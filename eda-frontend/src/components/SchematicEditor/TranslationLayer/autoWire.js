@@ -10,7 +10,7 @@
  * like hand-drawn ones and connect by coordinate coincidence.
  */
 
-import { pinAbsolutePosition, componentBBox, routeManhattan } from '../Canvas/geometry'
+import { pinAbsolutePosition, componentBBox, routeManhattan, projectOntoSegment } from '../Canvas/geometry'
 import { schematicStore } from '../Canvas/schematicStore'
 
 /**
@@ -58,26 +58,103 @@ export function mstEdges (points) {
   return edges
 }
 
+// Matches the merge tolerance of dsuNetlist's onSegment (eps 0.5) with a
+// safety margin: anything nearer than this to a foreign conductor would be
+// unioned into its net by the netlist compiler.
+const TOUCH_EPS = 0.75
+
+function pointNearSegment (p, a, b, eps = TOUCH_EPS) {
+  const { d } = projectOntoSegment(p, a, b)
+  return d <= eps
+}
+
+/**
+ * True when the candidate polyline would electrically touch a conductor of
+ * another net: a foreign pin on one of its segments, one of its vertices on
+ * a foreign wire, or a foreign wire's vertex on one of its segments (the
+ * three coincidence rules dsuNetlist merges by).
+ */
+function touchesForeign (pts, foreign) {
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1]
+    const b = pts[i]
+    for (const pin of foreign.pins) {
+      if (pointNearSegment(pin, a, b)) return true
+    }
+    for (const v of foreign.vertices) {
+      if (pointNearSegment(v, a, b)) return true
+    }
+  }
+  for (const p of pts) {
+    for (const seg of foreign.segments) {
+      if (pointNearSegment(p, seg.a, seg.b)) return true
+    }
+  }
+  return false
+}
+
 /**
  * Wire each group of canvas points into one net using the editor's router.
  * Components must already be committed to the schematic store so the router
  * can see their bounding boxes as obstacles.
  *
+ * Routing is net-aware: connectivity is coordinate coincidence, so a wire
+ * that merely brushes another net's pin or wire would short the two nets in
+ * the compiled netlist even though the imported topology was correct. Each
+ * candidate route is validated against every pin outside the net and all
+ * previously routed wires.
+ *
  * @param {Array<Array<{x, y}>>} groups pin positions per net
  * @returns {number} wires added
  */
 export function wirePointGroups (groups) {
-  const obstacles = schematicStore.getState().components.map(componentBBox)
+  const state = schematicStore.getState()
+  const obstacles = state.components.map(componentBBox)
+
+  const allPins = []
+  for (const comp of state.components) {
+    for (const pin of comp.pins) allPins.push(pinAbsolutePosition(comp, pin))
+  }
+  const key = (p) => Math.round(p.x) + ',' + Math.round(p.y)
+
+  // Conductors of other nets, grown as wiring progresses
+  const foreign = { pins: [], segments: [], vertices: [] }
+  for (const wire of state.wires) {
+    for (let i = 0; i < wire.points.length; i++) {
+      foreign.vertices.push(wire.points[i])
+      if (i > 0) foreign.segments.push({ a: wire.points[i - 1], b: wire.points[i] })
+    }
+  }
+
   let wired = 0
   for (const points of groups) {
     if (points.length < 2) continue
+    const netKeys = new Set(points.map(key))
+    foreign.pins = allPins.filter((p) => !netKeys.has(key(p)))
+
+    const netWires = []
     for (const [i, j] of mstEdges(points)) {
       const from = points[i]
       const to = points[j]
       const dir = Math.abs(to.x - from.x) >= Math.abs(to.y - from.y) ? 'HV' : 'VH'
-      const corners = routeManhattan(from, to, dir, obstacles)
-      const id = schematicStore.addWire([from, ...corners, to], { undoable: false })
-      if (id) wired++
+      const validate = (pts) => !touchesForeign(pts, foreign)
+      const corners = routeManhattan(from, to, dir, obstacles, validate)
+      const pts = [from, ...corners, to]
+      if (touchesForeign(pts, foreign)) {
+        console.warn('[autoWire] no short-free route found', from, to)
+      }
+      const id = schematicStore.addWire(pts, { undoable: false })
+      if (id) {
+        wired++
+        netWires.push(pts)
+      }
+    }
+    // This net's wires become foreign conductors for every following net
+    for (const pts of netWires) {
+      for (let i = 0; i < pts.length; i++) {
+        foreign.vertices.push(pts[i])
+        if (i > 0) foreign.segments.push({ a: pts[i - 1], b: pts[i] })
+      }
     }
   }
   return wired

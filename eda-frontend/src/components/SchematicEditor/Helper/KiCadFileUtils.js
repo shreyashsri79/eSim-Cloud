@@ -102,10 +102,16 @@ export const readKicadSchematic = (text) => {
         component.x = parseInt(splt[1]) / defScale
         component.y = parseInt(splt[2]) / defScale
         i++
-        // skips F command lines
-        do {
+        // F field lines; F1 carries the user-visible value ("1k", "40u").
+        // For sources/probes F1 just repeats the symbol name — not a value.
+        while (textSplit[i] && textSplit[i].split(' ')[0] === 'F') {
+          const fm = textSplit[i].match(/^F\s+1\s+"([^"]*)"/)
+          if (fm && fm[1] &&
+              fm[1].toLowerCase() !== (component.componentName || '').toLowerCase()) {
+            component.value = fm[1]
+          }
           i++
-        } while (textSplit[i].split(' ')[0] === 'F')
+        }
         i += 1 // skips redundant x y position line
         {
           let compOrient = textSplit[i].split(' ')
@@ -356,6 +362,9 @@ const loadComponents = async (instructions, defs) => {
       const h = rotated ? schema.width : schema.height
       // KiCad stores the component centre; the canvas stores the top-left
       const topLeft = snapPoint({ x: comp.x - w / 2, y: comp.y - h / 2 })
+      const props = initialProperties(compData, ComponentParameters)
+      // F1 field value from the schematic (1k, 40u, ...) beats the default
+      if (comp.value && props.VALUE !== undefined) props.VALUE = comp.value
       const id = schematicStore.addComponent({
         name: (compData.name || '').toUpperCase(),
         symbol: (compData.symbol_prefix || '').toUpperCase(),
@@ -366,7 +375,7 @@ const loadComponents = async (instructions, defs) => {
         rotation: comp.rotation || 0,
         svgPath: compData.svg_path,
         compObject: compData,
-        properties: initialProperties(compData, ComponentParameters),
+        properties: props,
         pins: schema.pins.map((pin) => ({
           number: pin.number,
           name: pin.name,
@@ -381,16 +390,22 @@ const loadComponents = async (instructions, defs) => {
       // KiCad references starting with '#' (power symbols, PWR_FLAG) are
       // virtual and must never reach the SPICE netlist — a bare "FLG1 0"
       // line segfaults ngspice. eSim's plot_* symbols are display-only
-      // probes, equally not simulatable. Both get the 'PWR' symbol so the
-      // netlist compiler's existing skip rule drops them.
+      // probes, equally not simulatable. Virtual symbols get 'FLG': the
+      // netlist compiler skips it WITHOUT marking the net as ground —
+      // 'PWR' pins turn their whole net into node 0, which grounded every
+      // plotted net and shorted the sources feeding them. Only genuine
+      // ground symbols (GND*) may anchor node 0 via 'PWR'.
       const virtual = def.reference.startsWith('#') || /^plot/i.test(def.name)
+      const grounding = /^gnd/i.test(def.name)
       const ph = buildPlaceholder(comp, def)
+      const props = placeholderProperties(def, comp.reference)
+      if (comp.value && props.VALUE !== undefined) props.VALUE = comp.value
       const id = schematicStore.addComponent({
         ...ph,
-        symbol: virtual ? 'PWR' : (def.reference || 'U'),
+        symbol: virtual ? (grounding ? 'PWR' : 'FLG') : (def.reference || 'U'),
         rotation: 0, // transform baked into the pin offsets
         compObject: { name: def.name, placeholder: true },
-        properties: placeholderProperties(def, comp.reference)
+        properties: props
       })
       placed = schematicStore.getComponent(id)
       placeholders.push((comp.reference || '?') + ' (' + comp.rawName + ')')

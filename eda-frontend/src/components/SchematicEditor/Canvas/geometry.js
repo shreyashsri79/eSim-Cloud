@@ -145,9 +145,18 @@ export function pathClear (points, obstacles) {
  * flipped one, then Z-shaped detours hugging each obstacle's padded edges.
  * Falls back to the plain preferred L when everything collides, so a route
  * always comes back. Returns intermediate corners only, like orthogonalRoute.
+ *
+ * `validate(points)` optionally vetoes a candidate polyline for reasons the
+ * rect obstacles can't express (the importer rejects paths that would touch
+ * another net's pins or wires). When a validator is present, Z-routes over a
+ * sweep of grid channels between and around the endpoints are also tried
+ * before giving up, since the rect-hugging detours only dodge components.
  */
-export function routeManhattan (from, to, dir = 'HV', obstacles = []) {
-  const check = (corners) => pathClear([from, ...corners, to], obstacles)
+export function routeManhattan (from, to, dir = 'HV', obstacles = [], validate = null) {
+  const check = (corners) => {
+    const pts = [from, ...corners, to]
+    return pathClear(pts, obstacles) && (!validate || validate(pts))
+  }
   const primary = orthogonalRoute(from, to, dir)
   if (check(primary)) return primary
   const flipped = orthogonalRoute(from, to, dir === 'HV' ? 'VH' : 'HV')
@@ -161,6 +170,20 @@ export function routeManhattan (from, to, dir = 'HV', obstacles = []) {
     for (const my of [snap(r.y - pad), snap(r.y + r.height + pad)]) {
       const corners = [{ x: from.x, y: my }, { x: to.x, y: my }]
       if (check(corners)) return corners
+    }
+  }
+  if (validate) {
+    const midX = snap((from.x + to.x) / 2)
+    const midY = snap((from.y + to.y) / 2)
+    for (let k = 0; k <= 40; k++) {
+      for (const s of k === 0 ? [0] : [-1, 1]) {
+        const mx = midX + s * k * GRID_SIZE
+        const zx = [{ x: mx, y: from.y }, { x: mx, y: to.y }]
+        if (check(zx)) return zx
+        const my = midY + s * k * GRID_SIZE
+        const zy = [{ x: from.x, y: my }, { x: to.x, y: my }]
+        if (check(zy)) return zy
+      }
     }
   }
   return primary

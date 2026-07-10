@@ -15,6 +15,19 @@ RUN wget -q -O /tmp/iverilog.tar.gz \
     && make -j"$(nproc)" \
     && make install
 
+# ── Stage 2: build NVC (VHDL simulator) against the same toolchain ──
+# --disable-llvm uses NVC's built-in JIT, avoiding an LLVM dependency.
+FROM alpine:3.13 AS nvc-builder
+RUN apk add --no-cache build-base zlib-dev libffi-dev zstd-dev \
+        elfutils-dev pkgconfig flex bison wget
+RUN wget -q -O /tmp/nvc.tar.gz \
+        https://github.com/nickg/nvc/releases/download/r1.11.2/nvc-1.11.2.tar.gz \
+    && tar -xzf /tmp/nvc.tar.gz -C /tmp \
+    && mkdir /tmp/nvc-build && cd /tmp/nvc-build \
+    && /tmp/nvc-1.11.2/configure --disable-llvm --prefix=/opt/nvc \
+    && make -j"$(nproc)" \
+    && make install
+
 FROM python:3.7-alpine3.13
 
 ENV PYTHONUNBUFFERED 1
@@ -95,5 +108,8 @@ RUN apk add --no-cache mariadb-connector-c-dev ;\
 COPY --from=iverilog-builder /opt/iverilog /opt/iverilog
 RUN apk add --no-cache libstdc++ zlib \
     && ln -sf /opt/iverilog/bin/* /usr/local/bin/
-# VHDL (NVC) has no alpine3.13-compatible package; the VHDL compiler
-# option reports a clean "not installed" error until one is provided.
+# NVC (VHDL) built in stage 2; runtime libs from the stock 3.13 repo.
+COPY --from=nvc-builder /opt/nvc /opt/nvc
+RUN apk add --no-cache elfutils libelf libffi zstd-libs xz-libs libbz2 \
+        fts libgcc \
+    && ln -sf /opt/nvc/bin/nvc /usr/local/bin/nvc

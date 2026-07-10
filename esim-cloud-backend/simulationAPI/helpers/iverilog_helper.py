@@ -122,10 +122,13 @@ def exec_verilog(sources, testbench, task_id, mode='simulate', compiler='iverilo
             compile_log_out = ''
             tb_entity = tb_filename.split('.')[0]
             
-            # Dynamically extract the exact entity name from the testbench VHDL code
-            match = re.search(r'(?i)entity\s+([a-zA-Z0-9_]+)\s+is', tb_content)
-            if match:
-                tb_entity = match.group(1)
+            # Dynamically extract the entity name from the testbench VHDL
+            # code. When one file holds both the design and the testbench,
+            # the testbench entity is conventionally declared last.
+            entities = re.findall(r'(?i)entity\s+([a-zA-Z0-9_]+)\s+is',
+                                  tb_content)
+            if entities:
+                tb_entity = entities[-1]
             
             if mode == 'syntax_check':
                 for filepath in all_files:
@@ -139,32 +142,28 @@ def exec_verilog(sources, testbench, task_id, mode='simulate', compiler='iverilo
                 result['compile_log'] = '[OK] VHDL Syntax check passed.\n' + compile_log_out
                 return result
 
-            # Full simulation: Analyze
-            for filepath in all_files:
-                proc = subprocess.Popen(['nvc', '-a', filepath], stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=current_dir)
-                stdout, stderr = proc.communicate(timeout=30)
-                compile_log_out += stdout.decode('utf-8', errors='replace') + stderr.decode('utf-8', errors='replace')
-                if proc.returncode != 0:
-                    result['compile_log'] = compile_log_out + '\n[ERROR] Analysis failed for ' + filepath
-                    return result
-
-            # Elaborate
-            proc = subprocess.Popen(['nvc', '-e', tb_entity], stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=current_dir)
+            # Full simulation: analyze + elaborate + run in ONE nvc
+            # invocation. Separate -a / -e / -r processes fail with
+            # "missing body for WORK.<ENTITY>" on the NVC 1.11 build used
+            # in the container; the combined form is also what upstream
+            # documents.
+            logger.info('Running NVC simulation (top: %s)', tb_entity)
+            cmd = (['nvc', '-a'] + all_files +
+                   ['-e', tb_entity,
+                    '-r', tb_entity, '--wave=dump.vcd', '--format=vcd'])
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=current_dir)
             stdout, stderr = proc.communicate(timeout=30)
-            compile_log_out += stdout.decode('utf-8', errors='replace') + stderr.decode('utf-8', errors='replace')
-            if proc.returncode != 0:
-                result['compile_log'] = compile_log_out + '\n[ERROR] Elaboration failed for ' + tb_entity
+            out = (stdout.decode('utf-8', errors='replace') +
+                   stderr.decode('utf-8', errors='replace'))
+            if proc.returncode != 0 and not [
+                    f for f in os.listdir(current_dir)
+                    if f.endswith('.vcd') and
+                    os.path.getsize(os.path.join(current_dir, f)) > 0]:
+                result['compile_log'] = out + \
+                    '\n[ERROR] NVC simulation failed for ' + tb_entity
                 return result
-
-            result['compile_log'] = '[OK] VHDL Compilation successful.\n' + compile_log_out
-
-            # --- Step 2: Simulate (NVC) ---
-            logger.info('Running NVC simulation')
-            proc = subprocess.Popen(['nvc', '-r', tb_entity, '--wave=dump.vcd', '--format=vcd'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=current_dir)
-            stdout, stderr = proc.communicate(timeout=30)
-            sim_stdout = stdout.decode('utf-8', errors='replace')
-            sim_stderr = stderr.decode('utf-8', errors='replace')
-            result['sim_output'] = sim_stdout + sim_stderr
+            result['compile_log'] = '[OK] VHDL Compilation successful.'
+            result['sim_output'] = out
             logger.info('nvc simulation completed with code %d', proc.returncode)
 
         else:

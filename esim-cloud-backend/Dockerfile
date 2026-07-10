@@ -63,13 +63,14 @@ RUN arduino-cli core update-index \
 
 RUN apk add --no-cache libxt jpeg-dev zlib-dev libxaw-dev libx11-dev libtool mariadb-connector-c-dev libffi-dev postgresql-dev
 
-# HDL simulators for the Logic Analyzer (simulation/hdl/upload).
-# Icarus Verilog ships in the alpine community repo. GHDL has no alpine
-# package — install it in a derived image or bind-mount a build if VHDL
-# simulation is needed; the API reports a clean "not installed" error
-# otherwise.
+# HDL simulators for the Verilog Simulator (api/verilog/upload).
+# Icarus Verilog (iverilog + vvp) covers Verilog and SystemVerilog (-g2012).
+# VHDL uses NVC; it has no alpine package, so it is a best-effort install
+# from the edge/testing repo. If NVC is absent the VHDL compiler option
+# reports a clean "not installed" error while Verilog keeps working.
 RUN apk add --no-cache iverilog || \
     apk add --no-cache --repository=https://dl-cdn.alpinelinux.org/alpine/edge/community iverilog
+RUN apk add --no-cache --repository=https://dl-cdn.alpinelinux.org/alpine/edge/testing nvc || true
 
 COPY requirements.txt /code/
 RUN apk add --no-cache mariadb-connector-c-dev ;\

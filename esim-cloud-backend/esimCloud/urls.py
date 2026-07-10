@@ -19,6 +19,7 @@ from drf_yasg import openapi
 from django.conf.urls import url, include
 from arduinoAPI import urls as arduinoURLs
 from ltiAPI import urls as ltiURLS
+from simulationAPI import verilog_urls as verilogURLs
 from chatbotAPI import urls as chatbotURLs
 
 schema_view = get_schema_view(
@@ -40,6 +41,9 @@ urlpatterns = [
 
     # Simulation API Routes
     path('api/simulation/', include(simulationURLs)),
+
+    # Verilog/HDL Simulation API Routes
+    path('api/verilog/', include(verilogURLs)),
 
     # libAPI routes
     path('api/', include(libURLs)),

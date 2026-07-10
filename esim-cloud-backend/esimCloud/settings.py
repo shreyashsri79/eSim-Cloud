@@ -225,6 +225,7 @@ CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_IMPORTS = (
     'simulationAPI.tasks',
+    'simulationAPI.verilog_tasks',
     'arduinoAPI.tasks'
 )
 

@@ -118,9 +118,14 @@ services:
   #     - ./mysql_data:/var/lib/mysql
 
   db:
-    image: postgres:13
+    # postgres:18+ images keep PGDATA in a version-specific subdirectory
+    # (/var/lib/postgresql/18/docker) and expect the volume to be mounted
+    # at /var/lib/postgresql — NOT the old /var/lib/postgresql/data path.
+    # A data directory initialised by an older major version will not
+    # start on 18; wipe ./postgres_data (dev) or dump/restore first.
+    image: postgres:18
     volumes:
-      - ./postgres_data:/var/lib/postgresql/data/:z
+      - ./postgres_data:/var/lib/postgresql:z
     env_file:
       - .env
 

@@ -72,6 +72,11 @@ def ExecNetlist(filepath, file_id):
         run_aborted = ('Fatal error' in err_txt or
                        'simulation(s) aborted' in err_txt)
         if run_aborted:
+            try:
+                with open(filepath, 'r', errors='replace') as f:
+                    logger.error('netlist of aborted run:\n%s', f.read())
+            except OSError:
+                pass
             output = {'fail': err_txt, 'error_help': parse_ngspice_error(err_txt)}
         elif os.path.isfile(current_dir+'/data.txt'):
             output = extract_data_from_ngspice_output(current_dir+'/data.txt')

@@ -16,7 +16,7 @@ import path from 'path'
 import api from '../../../../utils/Api'
 import { importSCHFile } from '../../Helper/KiCadFileUtils'
 import { schematicStore } from '../../Canvas/schematicStore'
-import { compileNetlist } from '../../Canvas/dsuNetlist'
+import { compileNetlist, checkErc } from '../../Canvas/dsuNetlist'
 import { toLegacyXml, fromLegacyXml } from '../../Canvas/LegacyMxGraphSerializer'
 import { pinAbsolutePosition, coordKey } from '../../Canvas/geometry'
 import { resetStandardDefs } from '../standardLibs'
@@ -30,14 +30,22 @@ const LIBRARY = {
   r: { name: 'R', svg_path: 'test-svgs/R.svg', symbol_prefix: 'R' },
   c: { name: 'C', svg_path: 'test-svgs/C.svg', symbol_prefix: 'C' },
   pwl: { name: 'pwl', svg_path: 'test-svgs/pwl.svg', symbol_prefix: 'v' },
-  gnd: { name: 'GND', svg_path: 'test-svgs/GND.svg', symbol_prefix: 'PWR' }
+  gnd: { name: 'GND', svg_path: 'test-svgs/GND.svg', symbol_prefix: 'PWR' },
+  dc: { name: 'DC', svg_path: 'test-svgs/DC.svg', symbol_prefix: 'v' },
+  sine: { name: 'SINE', svg_path: 'test-svgs/sine.svg', symbol_prefix: 'v' },
+  pwr_flag: { name: 'PWR_FLAG', svg_path: 'test-svgs/PWR_FLAG.svg', symbol_prefix: 'FLG' },
+  npn: { name: 'QNPN', svg_path: 'test-svgs/QNPN.svg', symbol_prefix: 'Q' }
 }
 
 const SVG_BY_PATH = {
   'test-svgs/R.svg': 'svg-R.svg',
   'test-svgs/C.svg': 'svg-C.svg',
   'test-svgs/pwl.svg': 'svg-pwl.svg',
-  'test-svgs/GND.svg': 'svg-GND.svg'
+  'test-svgs/GND.svg': 'svg-GND.svg',
+  'test-svgs/DC.svg': 'svg-DC.svg',
+  'test-svgs/sine.svg': 'svg-sine.svg',
+  'test-svgs/PWR_FLAG.svg': 'svg-PWR_FLAG.svg',
+  'test-svgs/QNPN.svg': 'svg-QNPN.svg'
 }
 
 function mockLibraryApi () {
@@ -161,6 +169,56 @@ describe('imported schematic survives save -> reload', () => {
     expect(vLine).toBeTruthy()
     const nodes = vLine.trim().split(/\s+/).slice(1, 3)
     expect(nodes[0]).not.toEqual(nodes[1])
+  })
+
+  it('BJT_amplifier.sch single-file import leaves no dry pins (ERC clean)', async () => {
+    mockLibraryApi()
+    // Serve the real bundled standard.lib, exactly what the browser fetches
+    const stdLib = fs.readFileSync(
+      path.join(__dirname, '..', '..', '..', '..', '..', 'public', 'kicad-libs', 'standard.lib'), 'utf8')
+    global.fetch = jest.fn().mockImplementation((url) => {
+      const svg = Object.keys(SVG_BY_PATH).find((p) => String(url).indexOf(p) !== -1)
+      const body = svg ? read(SVG_BY_PATH[svg]) : stdLib
+      return Promise.resolve({ ok: true, text: () => Promise.resolve(body) })
+    })
+
+    const summary = await importSCHFile(read('BJT_amplifier.sch'), read('BJT_amplifier-cache.lib'))
+    expect(summary.skipped).toEqual([])
+
+    const doc = schematicStore.getState()
+    const erc = checkErc(doc)
+    if (erc.errorMsg) {
+      // Name the dry pins so a failure pinpoints the culprit component
+      const onSeg = (p, a, b, eps = 0.5) => {
+        const cross = (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)
+        const len = Math.hypot(b.x - a.x, b.y - a.y) || 1
+        if (Math.abs(cross) / len > eps) return false
+        const dot = (p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)
+        return dot >= -eps * len && dot <= len * len + eps * len
+      }
+      const dry = []
+      for (const comp of doc.components) {
+        for (const pin of comp.pins) {
+          const p = pinAbsolutePosition(comp, pin)
+          const touches = doc.wires.some((w) => w.points.some(
+            (pt, i) => i < w.points.length - 1 && onSeg(p, pt, w.points[i + 1])))
+          if (!touches) {
+            dry.push((comp.properties.NAME || comp.name) + '.' + pin.number +
+              '@' + p.x.toFixed(1) + ',' + p.y.toFixed(1))
+          }
+        }
+      }
+      throw new Error('ERC: ' + erc.errorMsg + ' pinNC=' + erc.pinNC + ' candidates: ' + dry.join(', '))
+    }
+    expect(erc.errorMsg).toBeNull()
+
+    // Q1 must be the exact 3-pin transistor (not a 4-pin substrate variant)
+    // and still carry a usable NPN model card.
+    const compiled = compileNetlist(doc)
+    const qLine = compiled.main.split('\n').find((l) => /^q/i.test(l))
+    expect(qLine).toBeTruthy()
+    expect(qLine.trim().split(/\s+/)).toHaveLength(5) // q1 c b e <model>
+    expect(compiled.models).toMatch(/NPN/i)
   })
 
   it('importing a second file replaces the document instead of stacking circuits', async () => {

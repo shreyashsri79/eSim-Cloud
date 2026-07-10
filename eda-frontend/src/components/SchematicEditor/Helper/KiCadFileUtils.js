@@ -337,7 +337,16 @@ const loadComponents = async (instructions, defs) => {
   for (const comp of instructions.components) {
     const def = defForComponent(defs, comp)
     const defValid = def && defMatchesWires(comp, def, segments)
-    const resolved = await resolveLegacyComponent(comp, cache, config)
+    let resolved = await resolveLegacyComponent(comp, cache, config)
+
+    // The schematic's own lib def is ground truth for the pin set. A library
+    // symbol with a different pin count is a *different device* — fuzzy name
+    // lookup resolved eSim_NPN to a 4-pin QNPN (substrate pin) whose extra
+    // pin can never touch a wire, failing ERC on an otherwise clean import.
+    // The exact-pin placeholder is electrically right; use it instead.
+    if (resolved && defValid && resolved.schema.pins.length !== def.pins.length) {
+      resolved = null
+    }
 
     let placed = null
     if (resolved) {

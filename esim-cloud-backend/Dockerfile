@@ -68,10 +68,18 @@ RUN apk add --no-cache libxt jpeg-dev zlib-dev libxaw-dev libx11-dev libtool mar
 # VHDL uses NVC; it has no alpine package, so it is a best-effort install
 # from the edge/testing repo. If NVC is absent the VHDL compiler option
 # reports a clean "not installed" error while Verilog keeps working.
-# Pin iverilog to the matching 3.13 community repo. The edge build links
-# against a newer libstdc++ than alpine3.13 ships, which triggers
-# "Error relocating .../ivl: _ZSt28__throw_bad_array_new_lengthv" at runtime.
-RUN apk add --no-cache --repository=https://dl-cdn.alpinelinux.org/alpine/v3.13/community iverilog
+# iverilog only exists in the edge/community repo, and that build links
+# against a newer libstdc++ than alpine3.13 ships ("Error relocating
+# /usr/lib/ivl/ivl: _ZSt28__throw_bad_array_new_lengthv"). Upgrade
+# libstdc++/libgcc from edge/main first (soname-compatible, musl untouched),
+# then install iverilog from edge/community.
+RUN apk add --no-cache --upgrade \
+        --repository=https://dl-cdn.alpinelinux.org/alpine/edge/main \
+        libstdc++ libgcc && \
+    apk add --no-cache \
+        --repository=https://dl-cdn.alpinelinux.org/alpine/edge/community \
+        --repository=https://dl-cdn.alpinelinux.org/alpine/edge/main \
+        iverilog
 RUN apk add --no-cache --repository=https://dl-cdn.alpinelinux.org/alpine/edge/testing nvc || true
 
 COPY requirements.txt /code/

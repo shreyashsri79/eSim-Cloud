@@ -1,3 +1,20 @@
+# ── Stage 1: build Icarus Verilog against the alpine3.13 toolchain ──
+# The prebuilt edge/community iverilog needs a newer libstdc++ than
+# alpine3.13 ships ("Error relocating /usr/lib/ivl/ivl"), and upgrading
+# libstdc++/libgcc from edge conflicts with the build-base packages the
+# main image keeps installed. Compiling from source with the matching
+# GCC-10/musl toolchain sidesteps both problems.
+FROM alpine:3.13 AS iverilog-builder
+RUN apk add --no-cache build-base flex bison gperf zlib-dev autoconf wget
+RUN wget -q -O /tmp/iverilog.tar.gz \
+        https://github.com/steveicarus/iverilog/archive/refs/tags/v12_0.tar.gz \
+    && tar -xzf /tmp/iverilog.tar.gz -C /tmp \
+    && cd /tmp/iverilog-12_0 \
+    && sh autoconf.sh \
+    && ./configure --prefix=/opt/iverilog \
+    && make -j"$(nproc)" \
+    && make install
+
 FROM python:3.7-alpine3.13
 
 ENV PYTHONUNBUFFERED 1
@@ -73,25 +90,10 @@ RUN apk add --no-cache mariadb-connector-c-dev ;\
     && pip install --trusted-host pypi.python.org -r requirements.txt \
     && apk del .build-deps
 
-# HDL simulators for the Verilog Simulator (api/verilog/upload).
-# iverilog only exists in edge/community, and that build needs a newer
-# libstdc++ than alpine3.13 ships ("Error relocating /usr/lib/ivl/ivl:
-# _ZSt28__throw_bad_array_new_lengthv"). Upgrade libstdc++/libgcc from
-# edge/main (soname-compatible, musl untouched), then install iverilog.
-# IMPORTANT: this must stay AFTER the pip install layer — the edge libgcc
-# emits .relr.dyn sections that the alpine3.13 GCC-10 linker cannot read,
-# which breaks building cffi wheels.
-RUN apk add --no-cache --upgrade \
-        --repository=https://dl-cdn.alpinelinux.org/alpine/edge/main \
-        libstdc++ libgcc && \
-    apk add --no-cache \
-        --repository=https://dl-cdn.alpinelinux.org/alpine/edge/community \
-        --repository=https://dl-cdn.alpinelinux.org/alpine/edge/main \
-        iverilog
-# VHDL via NVC: best-effort, no alpine package guarantee. Absent NVC just
-# means the VHDL compiler option reports "not installed".
-RUN apk add --no-cache \
-        --repository=https://dl-cdn.alpinelinux.org/alpine/edge/testing \
-        --repository=https://dl-cdn.alpinelinux.org/alpine/edge/community \
-        --repository=https://dl-cdn.alpinelinux.org/alpine/edge/main \
-        nvc || true
+# Icarus Verilog built in stage 1 against this exact alpine version.
+# libstdc++ from the stock 3.13 repo satisfies its runtime link.
+COPY --from=iverilog-builder /opt/iverilog /opt/iverilog
+RUN apk add --no-cache libstdc++ zlib \
+    && ln -sf /opt/iverilog/bin/* /usr/local/bin/
+# VHDL (NVC) has no alpine3.13-compatible package; the VHDL compiler
+# option reports a clean "not installed" error until one is provided.

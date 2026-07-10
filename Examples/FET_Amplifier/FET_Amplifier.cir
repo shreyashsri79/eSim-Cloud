@@ -1,0 +1,13 @@
+* FET_Amplifier (eSim netlist via kicad-cli kicadxml)
+* Sheet Name: /
+c1 net__j1_g in 1u
+c6 net__j1_s gnd 0.1u
+j1 out net__j1_g net__j1_s eSim_NJF
+r2 gnd net__j1_g 1Meg
+r3 net__v2 out 3k
+r4 gnd net__j1_s 470
+u1 in plot_v1
+u2 out plot_v1
+v1 in gnd sine
+v2 net__v2 gnd DC
+.end

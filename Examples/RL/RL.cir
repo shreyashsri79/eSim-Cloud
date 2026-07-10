@@ -1,0 +1,8 @@
+* RL (eSim netlist via kicad-cli kicadxml)
+* Sheet Name: /
+l1 out gnd 100m
+r1 in out 10
+u1 in plot_v1
+u2 out plot_v1
+v1 in gnd pwl
+.end

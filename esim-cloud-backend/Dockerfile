@@ -63,25 +63,6 @@ RUN arduino-cli core update-index \
 
 RUN apk add --no-cache libxt jpeg-dev zlib-dev libxaw-dev libx11-dev libtool mariadb-connector-c-dev libffi-dev postgresql-dev
 
-# HDL simulators for the Verilog Simulator (api/verilog/upload).
-# Icarus Verilog (iverilog + vvp) covers Verilog and SystemVerilog (-g2012).
-# VHDL uses NVC; it has no alpine package, so it is a best-effort install
-# from the edge/testing repo. If NVC is absent the VHDL compiler option
-# reports a clean "not installed" error while Verilog keeps working.
-# iverilog only exists in the edge/community repo, and that build links
-# against a newer libstdc++ than alpine3.13 ships ("Error relocating
-# /usr/lib/ivl/ivl: _ZSt28__throw_bad_array_new_lengthv"). Upgrade
-# libstdc++/libgcc from edge/main first (soname-compatible, musl untouched),
-# then install iverilog from edge/community.
-RUN apk add --no-cache --upgrade \
-        --repository=https://dl-cdn.alpinelinux.org/alpine/edge/main \
-        libstdc++ libgcc && \
-    apk add --no-cache \
-        --repository=https://dl-cdn.alpinelinux.org/alpine/edge/community \
-        --repository=https://dl-cdn.alpinelinux.org/alpine/edge/main \
-        iverilog
-RUN apk add --no-cache --repository=https://dl-cdn.alpinelinux.org/alpine/edge/testing nvc || true
-
 COPY requirements.txt /code/
 RUN apk add --no-cache mariadb-connector-c-dev ;\
     apk add --update alpine-sdk && \
@@ -91,3 +72,26 @@ RUN apk add --no-cache mariadb-connector-c-dev ;\
     && pip install --upgrade pip\
     && pip install --trusted-host pypi.python.org -r requirements.txt \
     && apk del .build-deps
+
+# HDL simulators for the Verilog Simulator (api/verilog/upload).
+# iverilog only exists in edge/community, and that build needs a newer
+# libstdc++ than alpine3.13 ships ("Error relocating /usr/lib/ivl/ivl:
+# _ZSt28__throw_bad_array_new_lengthv"). Upgrade libstdc++/libgcc from
+# edge/main (soname-compatible, musl untouched), then install iverilog.
+# IMPORTANT: this must stay AFTER the pip install layer — the edge libgcc
+# emits .relr.dyn sections that the alpine3.13 GCC-10 linker cannot read,
+# which breaks building cffi wheels.
+RUN apk add --no-cache --upgrade \
+        --repository=https://dl-cdn.alpinelinux.org/alpine/edge/main \
+        libstdc++ libgcc && \
+    apk add --no-cache \
+        --repository=https://dl-cdn.alpinelinux.org/alpine/edge/community \
+        --repository=https://dl-cdn.alpinelinux.org/alpine/edge/main \
+        iverilog
+# VHDL via NVC: best-effort, no alpine package guarantee. Absent NVC just
+# means the VHDL compiler option reports "not installed".
+RUN apk add --no-cache \
+        --repository=https://dl-cdn.alpinelinux.org/alpine/edge/testing \
+        --repository=https://dl-cdn.alpinelinux.org/alpine/edge/community \
+        --repository=https://dl-cdn.alpinelinux.org/alpine/edge/main \
+        nvc || true

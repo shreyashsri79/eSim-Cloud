@@ -102,6 +102,12 @@ export async function importKicadSchFile (fileContents) {
   const doc = parseKicadSch(fileContents)
   const nets = extractNets(doc)
 
+  // An import IS the document. Importing onto a populated canvas merges the
+  // two circuits wherever coordinates happen to coincide — nets short across
+  // unrelated components ("shorted VSRC") with no visible cause. Undo brings
+  // the previous circuit back.
+  schematicStore.clearAll()
+
   const cache = new Map()
   const placedByUuid = new Map()
   const skipped = []

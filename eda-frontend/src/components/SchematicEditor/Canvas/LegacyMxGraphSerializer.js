@@ -31,7 +31,11 @@ function attrs (obj) {
 }
 
 function componentStyle (comp) {
-  let style = 'shape=image;fontColor=blue;image=../' + comp.svgPath +
+  // data: URIs contain ';' — they cannot survive the ;-delimited style
+  // string, so placeholders get no style image (the svgPath attribute on
+  // the cell carries the real value; see fromLegacyXml).
+  const image = String(comp.svgPath || '').startsWith('data:') ? '' : '../' + comp.svgPath
+  let style = 'shape=image;fontColor=blue;image=' + image +
     ';imageVerticalAlign=bottom;verticalAlign=bottom;imageAlign=bottom;align=bottom;spacingLeft=25;'
   if (comp.rotation) style += 'rotation=' + comp.rotation + ';'
   return style
@@ -64,6 +68,8 @@ export function toLegacyXml (doc) {
       Pin: '0',
       CellType: 'Component',
       symbol: comp.symbol,
+      // Verbatim svgPath — style-embedded images mangle data: URIs
+      svgPath: comp.svgPath,
       pinType: ' ',
       PinNumber: '0',
       PinName: ''
@@ -292,7 +298,7 @@ export function fromLegacyXml (xml) {
         width: g.width,
         height: g.height,
         rotation: parseInt(styleValue(style, 'rotation'), 10) || 0,
-        svgPath: compObject.svg_path || image.replace(/^(\.\.\/)+/, ''),
+        svgPath: cell.getAttribute('svgPath') || compObject.svg_path || image.replace(/^(\.\.\/)+/, ''),
         compObject: Object.keys(compObject).length ? compObject : null,
         properties,
         pins: []

@@ -436,5 +436,10 @@ export async function importSCHFile (fileContents, cacheLibContents) {
   const standardDefs = await getStandardDefs()
   const cacheDefs = cacheLibContents ? parseLegacyLib(cacheLibContents) : null
   const defs = buildDefsIndex(standardDefs, cacheDefs)
+  // An import IS the document. Importing onto a populated canvas merges the
+  // two circuits wherever coordinates happen to coincide — nets short across
+  // unrelated components ("shorted VSRC") with no visible cause. Undo brings
+  // the previous circuit back.
+  schematicStore.clearAll()
   return loadComponents(instructions, defs.size > 0 ? defs : null)
 }

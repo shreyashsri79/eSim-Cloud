@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import './VerilogSimulator.css'
+import './SpiceSimulator.css'
 
 // CodeMirror imports
 import { Controlled as CodeMirror } from 'react-codemirror2'
@@ -16,7 +17,7 @@ import { sanitizeNetlistForExport } from '../components/SchematicEditor/Helper/N
 import { saveSimulationRun } from '../utils/simulationHistory'
 import textToFile from '../components/Simulator/textToFile'
 import api from '../utils/Api'
-import Graph from '../components/Shared/WaveformGraph'
+import Graph from '../components/Shared/Graph'
 
 // ── SVG Icons ──
 const IconPlay = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
@@ -33,6 +34,8 @@ const IconFile = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="non
 const IconZap = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
 const IconChevronDown = () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
 const IconCircle = () => <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="12" cy="12" r="8"></circle></svg>
+const IconX = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+const IconActivity = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
 
 // ──────────────────────────────────────────
 //  Template Starter Netlist
@@ -131,7 +134,7 @@ function getTimestamp () {
   return now.toLocaleTimeString('en-US', { hour12: false }) + '.' + String(now.getMilliseconds()).padStart(3, '0')
 }
 
-// Trace colors for analog waveforms (1-based index, as WaveformGraph expects)
+// Trace colors for analog waveforms (1-based index, as Shared/Graph expects)
 const TRACE_PALETTE = ['#1e66f5', '#d20f39', '#40a02b', '#df8e1d', '#8839ef', '#179299', '#fe640b', '#ea76cb']
 
 function buildProbeColors (labels) {
@@ -162,7 +165,10 @@ export default function Simulator () {
   const consoleEndRef = useRef(null)
 
   // ── Waveform ──
+  // Merged graph data ({ labels, x, y }) as consumed by Shared/Graph —
+  // the same viewer the schematic editor's simulation screen uses.
   const [waveformData, setWaveformData] = useState(null)
+  const [waveformVisible, setWaveformVisible] = useState(false)
 
   // ── Hierarchy ──
   const [hierarchy, setHierarchy] = useState([])
@@ -446,12 +452,19 @@ export default function Simulator () {
         }
 
         if (details.graph === 'true') {
-          const parsed = details.data.map(d => ({
-            labels: d.labels,
-            x: d.x.map(v => parseFloat(v)),
-            y: d.y.map(row => row.map(v => parseFloat(v)))
-          }))
-          setWaveformData({ data: parsed })
+          // Merge all result datasets into the single { labels, x, y }
+          // shape Shared/Graph expects: labels[0] is the x-axis name.
+          const merged = { labels: [], x: [], y: [] }
+          details.data.forEach((d, i) => {
+            if (i === 0) {
+              merged.labels.push(d.labels[0])
+              merged.x = d.x.map(v => parseFloat(v))
+            }
+            d.labels.slice(1).forEach(l => merged.labels.push(l))
+            d.y.forEach(row => merged.y.push(row.map(v => parseFloat(v))))
+          })
+          setWaveformData(merged)
+          setWaveformVisible(true)
           addConsoleMessage('Waveform data loaded.', 'success')
         } else {
           setWaveformData(null)
@@ -505,20 +518,16 @@ export default function Simulator () {
   }
 
   const downloadWaveformCSV = () => {
-    if (!waveformData || !waveformData.data || waveformData.data.length === 0) {
+    if (!waveformData || !waveformData.x || waveformData.x.length === 0) {
       addConsoleMessage('[INFO] No waveform data available. Run a simulation first.', 'info')
       return
     }
-    const lines = []
-    waveformData.data.forEach(ds => {
-      lines.push(ds.labels.join(','))
-      for (let i = 0; i < ds.x.length; i++) {
-        const row = [ds.x[i]]
-        ds.y.forEach(sig => row.push(sig[i]))
-        lines.push(row.join(','))
-      }
-      lines.push('')
-    })
+    const lines = [waveformData.labels.join(',')]
+    for (let i = 0; i < waveformData.x.length; i++) {
+      const row = [waveformData.x[i]]
+      waveformData.y.forEach(sig => row.push(sig[i]))
+      lines.push(row.join(','))
+    }
     const blob = new Blob([lines.join('\n')], { type: 'text/csv' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
@@ -708,7 +717,7 @@ export default function Simulator () {
   }
 
   function renderWaveform () {
-    if (!waveformData || !waveformData.data || waveformData.data.length === 0) {
+    if (!waveformData || !waveformData.x || waveformData.x.length === 0) {
       return (
         <div className="verilog-waveform-content">
           <div className="verilog-waveform-empty">
@@ -720,20 +729,17 @@ export default function Simulator () {
 
     return (
       <div className="verilog-waveform-content">
-        {waveformData.data.map((dataset, idx) => (
+        <div className="spice-graph-card">
           <Graph
-            key={idx}
-            labels={dataset.labels}
-            x={dataset.x}
-            y={dataset.y}
+            labels={waveformData.labels}
+            x={waveformData.x}
+            y={waveformData.y}
             xscale="si"
             yscale="si"
-            precision={4}
-            stepped={false}
-            isDarkMode={isDarkMode}
-            probeColors={buildProbeColors(dataset.labels)}
+            precision={5}
+            probeColors={buildProbeColors(waveformData.labels)}
           />
-        ))}
+        </div>
       </div>
     )
   }
@@ -882,6 +888,12 @@ export default function Simulator () {
           </button>
           <button
             className="verilog-toolbar-btn"
+            onClick={() => setWaveformVisible(prev => !prev)}
+          >
+            <IconActivity /> {waveformVisible ? 'Hide Waveform' : 'Show Waveform'}
+          </button>
+          <button
+            className="verilog-toolbar-btn"
             onClick={() => setHierarchyCollapsed(prev => !prev)}
           >
             <IconMenu /> {hierarchyCollapsed ? 'Show Hierarchy' : 'Hide Hierarchy'}
@@ -900,58 +912,63 @@ export default function Simulator () {
           {renderHierarchyTree()}
         </div>
 
-        {/* Content Area */}
-        <div className="verilog-content">
-          {/* Editor Panel */}
-          <div className="verilog-editor-panel">
-            <div className="verilog-panel-header">
-              <span>Editor</span>
-              <button className="verilog-panel-header-btn" onClick={() => toggleMaximize('editor')} title="Maximize"><IconMaximize /></button>
+        {/* Workspace: editor + console left, waveform right */}
+        <div className="spice-workspace">
+          {/* Left: Editor + Console */}
+          <div className="spice-left">
+            {/* Editor Panel */}
+            <div className="verilog-editor-panel">
+              <div className="verilog-panel-header">
+                <span>Editor</span>
+                <button className="verilog-panel-header-btn" onClick={() => toggleMaximize('editor')} title="Maximize"><IconMaximize /></button>
+              </div>
+              {renderTabs()}
+              <div className="verilog-editor-container">
+                <CodeMirror
+                  value={files[activeTab] ? files[activeTab].content : ''}
+                  options={cmOptions}
+                  onBeforeChange={(editor, data, value) => updateFileContent(activeTab, value)}
+                />
+              </div>
             </div>
-            {renderTabs()}
-            <div className="verilog-editor-container">
-              <CodeMirror
-                value={files[activeTab] ? files[activeTab].content : ''}
-                options={cmOptions}
-                onBeforeChange={(editor, data, value) => updateFileContent(activeTab, value)}
-              />
+
+            {/* Resize Handle */}
+            <div
+              className="verilog-resize-handle"
+              onMouseDown={handleResizeStart}
+              style={{ cursor: isResizing ? 'row-resize' : undefined }}
+            />
+
+            {/* Console */}
+            <div className="verilog-bottom" style={{ height: bottomHeight + 'px' }}>
+              <div className="verilog-console">
+                <div className="verilog-panel-header">
+                  <span>Console</span>
+                  <div style={{ display: 'flex', gap: '4px' }}>
+                    <button
+                      className="verilog-panel-header-btn"
+                      onClick={() => setConsoleLines([])}
+                      title="Clear Console"
+                    >
+                      <IconTrash />
+                    </button>
+                    <button className="verilog-panel-header-btn" onClick={() => toggleMaximize('console')} title="Maximize"><IconMaximize /></button>
+                  </div>
+                </div>
+                {renderConsole()}
+              </div>
             </div>
           </div>
 
-          {/* Resize Handle */}
-          <div
-            className="verilog-resize-handle"
-            onMouseDown={handleResizeStart}
-            style={{ cursor: isResizing ? 'row-resize' : undefined }}
-          />
-
-          {/* Bottom Panels */}
-          <div className="verilog-bottom" style={{ height: bottomHeight + 'px' }}>
-            {/* Console */}
-            <div className="verilog-console">
-              <div className="verilog-panel-header">
-                <span>Console</span>
-                <div style={{ display: 'flex', gap: '4px' }}>
-                  <button
-                    className="verilog-panel-header-btn"
-                    onClick={() => setConsoleLines([])}
-                    title="Clear Console"
-                  >
-                    <IconTrash />
-                  </button>
-                  <button className="verilog-panel-header-btn" onClick={() => toggleMaximize('console')} title="Maximize"><IconMaximize /></button>
-                </div>
-              </div>
-              {renderConsole()}
-            </div>
-
-            {/* Waveform */}
+          {/* Right: Waveform */}
+          <div className={'spice-right' + (waveformVisible ? '' : ' hidden')}>
             <div className="verilog-waveform">
               <div className="verilog-panel-header">
                 <span>Waveform</span>
                 <div style={{ display: 'flex', gap: '4px' }}>
                   <button className="verilog-panel-header-btn" onClick={downloadWaveformCSV} title="Download CSV"><IconDownload /></button>
                   <button className="verilog-panel-header-btn" onClick={() => toggleMaximize('waveform')} title="Maximize"><IconMaximize /></button>
+                  <button className="verilog-panel-header-btn" onClick={() => setWaveformVisible(false)} title="Hide Waveform"><IconX /></button>
                 </div>
               </div>
               {renderWaveform()}

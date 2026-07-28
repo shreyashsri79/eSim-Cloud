@@ -13,6 +13,7 @@ from workflowAPI import urls as workURLs
 from publishAPI import urls as publishURLs
 from authAPI import views as authAPI_views
 from authAPI import urls as authURLs
+from authAPI import admin_urls as adminPanelURLs
 from rest_framework import permissions
 from drf_yasg.views import get_schema_view
 from drf_yasg import openapi
@@ -87,6 +88,11 @@ schema_view = get_schema_view(
 )
 
 urlpatterns = [
+    # Password-gated account console. Independent of every application
+    # account: entry requires the panel password alone (see authAPI.models
+    # .AdminAccess), bootstrapped once from the server-side setup token.
+    path('admin/', include(adminPanelURLs)),
+
     path('api/admin/', admin.site.urls),
 
     # Chatbot API Routes

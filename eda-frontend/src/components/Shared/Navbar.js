@@ -232,14 +232,6 @@ export function Header () {
               >
                 Change password
               </MenuItem>
-              <MenuItem
-                component="a"
-                href="/api/auth/dashboard/"
-                target="_blank"
-                onClick={handleClose}
-              >
-                Admin Dashboard
-              </MenuItem>
               <Divider />
               <MenuItem onClick={() => {
                 store.dispatch(logout(history))

@@ -94,8 +94,35 @@ Then open:
 | http://localhost:4200/ | Arduino Angular frontend (direct, hot-reload) |
 | http://localhost:8000/api/docs | **Swagger UI — interactive API documentation** |
 | http://localhost/api/admin | Django admin (`admin` / `admin`) |
+| http://localhost/admin | Account console — password-gated, see [below](#the-admin-account-console) |
 
 Default login: username `admin`, password `admin`.
+
+#### The admin account console
+
+`/admin` is a standalone operator panel for listing, creating, deleting and
+OTP-approving user accounts. It is **not** tied to any application account —
+no user, however privileged, can reach it by logging into the site. Entry
+requires a single panel password of its own.
+
+On a fresh deployment no password exists yet, so the panel opens only for
+whoever can read the server, via a one-time bootstrap token:
+
+```bash
+docker exec -it <django-container> python3 manage.py admin_setup_token
+```
+
+Enter that token at `/admin/setup/` together with the password you want.
+Setup is one-shot: the token is destroyed the moment a password is set and
+`/admin/setup/` returns 404 from then on. Afterwards `/admin` is reachable
+only with the password, and five wrong guesses lock the panel for 15 minutes.
+
+Lost the password? Reset it from a shell — the deliberate recovery path:
+
+```bash
+docker exec -it <django-container> python3 manage.py set_admin_password
+docker exec -it <django-container> python3 manage.py set_admin_password --clear  # back to first-time setup
+```
 
 Production stack:
 
@@ -173,7 +200,7 @@ The backend (`esim-cloud-backend/`) is a single Django project `esimCloud` compo
 
 | App | URL prefix | Responsibility |
 |-----|-----------|----------------|
-| **authAPI** | `/api/auth/` | Registration with e-mail OTP (`PendingUser` model → real `User` on activation), token login (DRF TokenAuth via [Djoser](https://djoser.readthedocs.io/)), Google OAuth2 callback, password reset |
+| **authAPI** | `/api/auth/`, `/admin/` | Registration with e-mail OTP (`PendingUser` model → real `User` on activation), token login (DRF TokenAuth via [Djoser](https://djoser.readthedocs.io/)), Google OAuth2 callback, password reset; also serves the password-gated account console at `/admin/` (`admin_views.py`, `AdminAccess` model) |
 | **simulationAPI** | `/api/simulation/` | SPICE + single-file HDL uploads, Celery task status, per-user/per-schematic simulation history, runtime statistics, admin-configurable task time limits |
 | **simulationAPI (verilog)** | `/api/verilog/` | The HDL IDE backend: multi-file Verilog/SystemVerilog/VHDL compile & simulate, VCD results |
 | **arduinoAPI** | `/api/arduino/` | Queue avr-gcc compilation of Arduino sketches (C++ or inline assembly) |

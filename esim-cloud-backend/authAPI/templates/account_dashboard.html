@@ -267,8 +267,12 @@
         <header>
             <div>
                 <h1>Account Management</h1>
-                <p class="subtitle">Locally hosted panel to manage users and verify registrations</p>
+                <p class="subtitle">Password-protected panel to manage users and verify registrations</p>
             </div>
+            <form method="POST" action="{% url 'admin_logout' %}">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-danger">Sign out</button>
+            </form>
         </header>
 
         <div class="grid">

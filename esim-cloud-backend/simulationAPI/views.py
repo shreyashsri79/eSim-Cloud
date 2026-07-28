@@ -9,6 +9,8 @@ from rest_framework import status
 from django.conf import settings
 from rest_framework.exceptions import ValidationError
 from celery.result import AsyncResult
+from drf_yasg.utils import swagger_auto_schema
+from drf_yasg import openapi
 from saveAPI.models import StateSave
 import uuid
 from .models import runtimeStat, Limit, simulation
@@ -23,6 +25,26 @@ import logging
 
 
 logger = logging.getLogger(__name__)
+
+# Shared drf-yasg pieces -----------------------------------------------------
+
+TASK_STATE_RESPONSE = openapi.Schema(
+    type=openapi.TYPE_OBJECT,
+    properties={
+        'state': openapi.Schema(
+            type=openapi.TYPE_STRING,
+            description='Celery task state '
+                        '(PENDING / STARTED / PROGRESS / SUCCESS / FAILURE)'),
+        'details': openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            description='Task metadata on submit; parsed simulation output '
+                        'once the task reaches SUCCESS'),
+    })
+
+SIM_HISTORY_RESPONSE = openapi.Response(
+    description='List of stored simulation runs (netlist, result JSON, '
+                'simulation_type, timestamps) for the requested schematic',
+)
 
 
 def saveNetlistDB(task_id, filepath, request,
@@ -76,6 +98,45 @@ class NetlistUploader(APIView):
     permission_classes = (AllowAny,)
     parser_classes = (MultiPartParser, FormParser,)
 
+    @swagger_auto_schema(
+        tags=['Simulation (ngspice)'],
+        operation_summary='Upload a SPICE netlist for simulation',
+        operation_description=(
+            'Queues an **ngspice** run on a Celery worker and returns a '
+            '`task_id`. Poll `GET /api/simulation/status/{task_id}` until '
+            'the task state is `SUCCESS`; the parsed waveform/operating-'
+            'point data is returned in `details`.\n\n'
+            'The netlist must contain a ground node (node 0) and an '
+            'analysis directive (`.tran`, `.ac`, `.dc` or `.op`).'),
+        manual_parameters=[
+            openapi.Parameter(
+                'file', openapi.IN_FORM, type=openapi.TYPE_FILE,
+                required=True, description='SPICE netlist (.cir/.net) file'),
+            openapi.Parameter(
+                'simulationType', openapi.IN_FORM,
+                type=openapi.TYPE_STRING, required=False,
+                description='Label stored in simulation history '
+                            '(default: NgSpiceSimulator)'),
+            openapi.Parameter(
+                'save_id', openapi.IN_FORM, type=openapi.TYPE_STRING,
+                required=False,
+                description='UUID of a saved schematic to attach this run '
+                            'to (with version + branch)'),
+            openapi.Parameter(
+                'version', openapi.IN_FORM, type=openapi.TYPE_STRING,
+                required=False, description='Schematic version id'),
+            openapi.Parameter(
+                'branch', openapi.IN_FORM, type=openapi.TYPE_STRING,
+                required=False, description='Schematic branch name'),
+            openapi.Parameter(
+                'lti_id', openapi.IN_FORM, type=openapi.TYPE_INTEGER,
+                required=False,
+                description='LTI session id to record this run against'),
+        ],
+        responses={
+            200: openapi.Response('Task queued', TASK_STATE_RESPONSE),
+            400: 'Invalid upload (missing/oversized file)',
+        })
     def post(self, request, *args, **kwargs):
         logger.info('Got POST for netlist upload: ')
         logger.info(request.data)
@@ -130,6 +191,39 @@ class HDLUploader(APIView):
     permission_classes = (AllowAny,)
     parser_classes = (MultiPartParser, FormParser,)
 
+    @swagger_auto_schema(
+        tags=['Simulation (ngspice)'],
+        operation_summary='Upload an HDL file (Verilog/VHDL) for simulation',
+        operation_description=(
+            'Queues a digital logic simulation using **Icarus Verilog** or '
+            '**GHDL/NVC** and returns a `task_id`. Poll '
+            '`GET /api/simulation/status/{task_id}`; on `SUCCESS` the '
+            '`details` field carries the parsed VCD waveform payload.'),
+        manual_parameters=[
+            openapi.Parameter(
+                'file', openapi.IN_FORM, type=openapi.TYPE_FILE,
+                required=True,
+                description='HDL source: Verilog testbench (.v) or VHDL '
+                            'file (.vhd)'),
+            openapi.Parameter(
+                'simulator', openapi.IN_FORM, type=openapi.TYPE_STRING,
+                required=False, enum=['iverilog', 'ghdl'],
+                description='Simulator backend (default: iverilog)'),
+            openapi.Parameter(
+                'stop_time', openapi.IN_FORM, type=openapi.TYPE_STRING,
+                required=False,
+                description='GHDL only: --stop-time value, e.g. "1000ns" '
+                            '(pattern: <int><fs|ps|ns|us|ms|sec>)'),
+            openapi.Parameter(
+                'simulationType', openapi.IN_FORM, type=openapi.TYPE_STRING,
+                required=False,
+                description='History label; defaults to '
+                            'IcarusVerilogSimulator / GhdlSimulator'),
+        ],
+        responses={
+            200: openapi.Response('Task queued', TASK_STATE_RESPONSE),
+            400: 'Bad simulator name, bad stop_time format or invalid file',
+        })
     def post(self, request, *args, **kwargs):
         logger.info('Got POST for HDL upload')
         simulator = request.data.get('simulator', 'iverilog')
@@ -186,6 +280,19 @@ class CeleryResultView(APIView):
     permission_classes = (AllowAny,)
     methods = ['GET']
 
+    @swagger_auto_schema(
+        tags=['Simulation (ngspice)'],
+        operation_summary='Poll simulation task status / fetch results',
+        operation_description=(
+            'Returns the Celery state for a `task_id` obtained from any of '
+            'the upload endpoints. While running, `state` is `PENDING` / '
+            '`STARTED` / `PROGRESS`. On `SUCCESS`, `details` contains the '
+            'parsed simulation output (graph points or VCD data); on '
+            'simulation errors it contains `fail` and `error_help` keys.'),
+        responses={
+            200: openapi.Response('Task state', TASK_STATE_RESPONSE),
+            400: 'Invalid uuid format',
+        })
     def get(self, request, task_id):
 
         if isinstance(task_id, uuid.UUID):
@@ -208,6 +315,14 @@ class CeleryResultView(APIView):
 class SimulationResults(APIView):
     permission_classes = (IsAuthenticated, )
 
+    @swagger_auto_schema(
+        tags=['Simulation (ngspice)'],
+        operation_summary='Simulation history for a saved schematic',
+        operation_description=(
+            'Lists all simulation runs the authenticated user executed '
+            'against a given schematic (`save_id` + `version` + `branch`). '
+            'Requires `Authorization: Token <auth_token>`.'),
+        responses={200: SIM_HISTORY_RESPONSE, 401: 'Not authenticated'})
     def get(self, request, save_id, sim, version, branch):
         if sim is None:
             sims = simulation.objects.filter(
@@ -226,6 +341,14 @@ class SimulationResults(APIView):
 class SimulationResultsForLTI(APIView):
     permission_classes = (IsAuthenticated, )
 
+    @swagger_auto_schema(
+        tags=['Simulation (ngspice)'],
+        operation_summary='Simulation history for an LTI schematic',
+        operation_description=(
+            'Same as the schematic history endpoint but scoped for LTI '
+            '(LMS) sessions: matches on `save_id` only, ignoring '
+            'version/branch. Requires token auth.'),
+        responses={200: SIM_HISTORY_RESPONSE, 401: 'Not authenticated'})
     def get(self, request, save_id, sim, version, branch):
         if sim is None:
             sims = simulation.objects.filter(
@@ -242,6 +365,14 @@ class SimulationResultsForLTI(APIView):
 class SimulationResultsFromSimulator(APIView):
     permission_classes = (IsAuthenticated, )
 
+    @swagger_auto_schema(
+        tags=['Simulation (ngspice)'],
+        operation_summary='Simulation history filtered by simulator type',
+        operation_description=(
+            'Lists all of the authenticated user\'s simulation runs for a '
+            'given simulator label, e.g. `NgSpiceSimulator`, '
+            '`IcarusVerilogSimulator`, `GhdlSimulator`.'),
+        responses={200: SIM_HISTORY_RESPONSE, 401: 'Not authenticated'})
     def get(self, request, sim):
         sims = simulation.objects.filter(
             owner=self.request.user, simulation_type=sim)
@@ -252,6 +383,13 @@ class SimulationResultsFromSimulator(APIView):
 class GetLTISimResults(APIView):
     permission_classes = (AllowAny, )
 
+    @swagger_auto_schema(
+        tags=['Simulation (ngspice)'],
+        operation_summary='Simulation runs recorded in an LTI session',
+        operation_description=(
+            'Returns every simulation attached to the given LTI session id '
+            '(used by LMS instructors to inspect student attempts).'),
+        responses={200: SIM_HISTORY_RESPONSE, 404: 'LTI session not found'})
     def get(self, request, lti_id):
         try:
             session = ltiSession.objects.get(id=lti_id)

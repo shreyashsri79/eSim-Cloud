@@ -128,7 +128,7 @@ const ComponentItem = React.memo(function ComponentItem ({ comp, selected, onMou
         style={{ cursor: 'move' }}
       >
         <rect x={-2} y={-2} width={w + 4} height={h + 4} fill="transparent" />
-        <image href={svgHref(comp.svgPath)} x={0} y={0} width={w} height={h} preserveAspectRatio="xMidYMid meet" />
+        <image href={svgHref(comp.svgPath)} x={0} y={0} width={w} height={h} preserveAspectRatio="none" />
         {comp.pins.map((pin) => (
           <circle key={pin.number} cx={pin.dx} cy={pin.dy} r={1.8} fill={PIN_COLOR} />
         ))}
@@ -254,7 +254,7 @@ const MiniMap = React.memo(function MiniMap ({ components, wires, view, size }) 
             key={c.id}
             href={svgHref(c.svgPath)}
             x={c.x} y={c.y} width={c.width} height={c.height}
-            preserveAspectRatio="xMidYMid meet"
+            preserveAspectRatio="none"
             transform={c.rotation
               ? `rotate(${c.rotation} ${c.x + c.width / 2} ${c.y + c.height / 2})`
               : undefined}
@@ -303,6 +303,7 @@ function InteractionOverlay ({ svgRef }) {
               href={svgHref(item.comp.svgPath)}
               x={item.comp.x} y={item.comp.y}
               width={item.comp.width} height={item.comp.height}
+              preserveAspectRatio="none"
               transform={item.comp.rotation
                 ? `rotate(${item.comp.rotation} ${item.comp.x + item.comp.width / 2} ${item.comp.y + item.comp.height / 2})`
                 : undefined}

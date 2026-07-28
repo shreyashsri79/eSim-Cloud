@@ -10,7 +10,7 @@
  * like hand-drawn ones and connect by coordinate coincidence.
  */
 
-import { pinAbsolutePosition, componentBBox, routeManhattan, projectOntoSegment } from '../Canvas/geometry'
+import { pinAbsolutePosition, componentBBox, routeManhattan, projectOntoSegment, pathClear } from '../Canvas/geometry'
 import { schematicStore } from '../Canvas/schematicStore'
 
 /**
@@ -138,8 +138,19 @@ export function wirePointGroups (groups) {
       const to = points[j]
       const dir = Math.abs(to.x - from.x) >= Math.abs(to.y - from.y) ? 'HV' : 'VH'
       const validate = (pts) => !touchesForeign(pts, foreign)
-      const corners = routeManhattan(from, to, dir, obstacles, validate)
-      const pts = [from, ...corners, to]
+      let corners = routeManhattan(from, to, dir, obstacles, validate)
+      let pts = [from, ...corners, to]
+      if (!pathClear(pts, obstacles) || touchesForeign(pts, foreign)) {
+        // Symbols whose pins sit inside their own bounding box (common in the
+        // old editor's artwork) make their own body an unavoidable obstacle —
+        // the router then degrades to its blind fallback. Retry without the
+        // boxes that contain the endpoints.
+        const owns = (r, p) => p.x >= r.x - 2 && p.x <= r.x + r.width + 2 &&
+          p.y >= r.y - 2 && p.y <= r.y + r.height + 2
+        const edgeObstacles = obstacles.filter((r) => !owns(r, from) && !owns(r, to))
+        corners = routeManhattan(from, to, dir, edgeObstacles, validate)
+        pts = [from, ...corners, to]
+      }
       if (touchesForeign(pts, foreign)) {
         console.warn('[autoWire] no short-free route found', from, to)
       }

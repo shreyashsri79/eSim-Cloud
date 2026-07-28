@@ -10,6 +10,8 @@ from django.http import HttpResponseNotFound
 from djoser import utils
 from djoser.serializers import TokenSerializer
 from authAPI.serializers import TokenCreateSerializer
+from drf_yasg.utils import swagger_auto_schema
+from drf_yasg import openapi
 
 Token = djoser_settings.TOKEN_MODEL
 
@@ -85,6 +87,29 @@ class CustomTokenCreateView(utils.ActionViewMixin, generics.GenericAPIView):
     serializer_class = TokenCreateSerializer
     permission_classes = [permissions.AllowAny]
 
+    @swagger_auto_schema(
+        tags=['auth'],
+        operation_summary='Obtain an authentication token',
+        operation_description=(
+            'Exchange username/e-mail + password for a DRF token. Use the '
+            'returned value on protected endpoints as the header '
+            '`Authorization: Token <auth_token>`.'),
+        responses={
+            200: openapi.Response(
+                'Token issued',
+                openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    properties={
+                        'auth_token': openapi.Schema(
+                            type=openapi.TYPE_STRING),
+                        'user_id': openapi.Schema(
+                            type=openapi.TYPE_INTEGER),
+                    })),
+            400: 'Invalid credentials or inactive account',
+        })
+    def post(self, request, **kwargs):
+        return super().post(request, **kwargs)
+
     def _action(self, serializer):
         from rest_framework.authtoken.models import Token
         token, created = Token.objects.get_or_create(user=serializer.user)
@@ -100,6 +125,43 @@ class CustomTokenCreateView(utils.ActionViewMixin, generics.GenericAPIView):
 class CustomUserCreateView(generics.GenericAPIView):
     permission_classes = [permissions.AllowAny]
 
+    @swagger_auto_schema(
+        tags=['auth'],
+        operation_summary='Register a new user (step 1: request OTP)',
+        operation_description=(
+            'Creates a **PendingUser** and e-mails a 6-digit OTP to the '
+            'given address. The account does not exist until the OTP is '
+            'confirmed via `POST /api/auth/users/activation/`. In dev '
+            'setups without SMTP configured, the OTP is included in the '
+            'response for convenience.'),
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            required=['username', 'email', 'password'],
+            properties={
+                'username': openapi.Schema(type=openapi.TYPE_STRING),
+                'email': openapi.Schema(type=openapi.TYPE_STRING,
+                                        format='email'),
+                'password': openapi.Schema(type=openapi.TYPE_STRING,
+                                           format='password'),
+            }),
+        responses={
+            201: openapi.Response(
+                'Pending user created, OTP sent',
+                openapi.Schema(
+                    type=openapi.TYPE_OBJECT,
+                    properties={
+                        'username': openapi.Schema(
+                            type=openapi.TYPE_STRING),
+                        'email': openapi.Schema(type=openapi.TYPE_STRING),
+                        'id': openapi.Schema(type=openapi.TYPE_INTEGER),
+                        'otp': openapi.Schema(
+                            type=openapi.TYPE_STRING,
+                            description='Only present when SMTP is left '
+                                        'on the placeholder dev '
+                                        'credentials'),
+                    })),
+            400: 'Missing fields or username/e-mail already taken',
+        })
     def post(self, request, *args, **kwargs):
         username = request.data.get("username")
         email = request.data.get("email")
@@ -187,6 +249,28 @@ class CustomUserCreateView(generics.GenericAPIView):
 class CustomUserActivationView(generics.GenericAPIView):
     permission_classes = [permissions.AllowAny]
 
+    @swagger_auto_schema(
+        tags=['auth'],
+        operation_summary='Activate a user (step 2: confirm OTP)',
+        operation_description=(
+            'Confirms the OTP e-mailed by the registration endpoint, '
+            'promotes the PendingUser to a real active User and deletes '
+            'the pending record. After this, log in via '
+            '`POST /api/auth/token/login/`.'),
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            required=['email', 'token'],
+            properties={
+                'email': openapi.Schema(type=openapi.TYPE_STRING,
+                                        format='email'),
+                'token': openapi.Schema(
+                    type=openapi.TYPE_STRING,
+                    description='6-digit OTP from the e-mail'),
+            }),
+        responses={
+            204: 'Account activated',
+            400: 'Invalid OTP, missing fields or already registered',
+        })
     def post(self, request, *args, **kwargs):
         token = request.data.get("token")
         email = request.data.get("email")

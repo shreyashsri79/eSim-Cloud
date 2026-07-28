@@ -14,7 +14,12 @@
  *    dereferences them unconditionally)
  */
 
-import { pinAbsolutePosition, coordKey } from './geometry'
+import {
+  pinAbsolutePosition,
+  coordKey,
+  rotate90,
+  simplifyPolyline
+} from './geometry'
 import { bumpIdCounter } from './schematicStore'
 
 const ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }
@@ -238,8 +243,17 @@ function orthogonalize (points) {
  * Handles both mxCodec-encoded saves from the old editor and files written
  * by toLegacyXml above.
  *
+ * Old-editor saves (recognised by pin cells carrying no `parent` attribute)
+ * get no wires at all: their stored wire geometry is unreliable — the old
+ * mxGraph router shaped edges at render time and junction coordinates go
+ * stale — so only the pin-level connectivity is extracted, returned as
+ * `legacyNetGroups` (arrays of absolute pin positions, one per net). The
+ * caller redraws those nets with the editor's own router (see
+ * TranslationLayer/autoWire wirePointGroups), the same way the KiCad
+ * importer does.
+ *
  * @param {string} xml
- * @returns {{components: Array, wires: Array, probes: Array}}
+ * @returns {{components: Array, wires: Array, probes: Array, legacyNetGroups?: Array}}
  */
 export function fromLegacyXml (xml) {
   const dom = new DOMParser().parseFromString(xml, 'text/xml')
@@ -251,6 +265,7 @@ export function fromLegacyXml (xml) {
   const pinIndex = new Map() // pinId -> { comp, pin }
   const edges = []
   let lastComponent = null
+  let oldDialect = false
 
   const cells = rootEl.children
   for (let i = 0; i < cells.length; i++) {
@@ -322,9 +337,42 @@ export function fromLegacyXml (xml) {
         dx: g.x,
         dy: g.y
       }
+      // Old-editor saves (pins carry no `parent` attribute) store pin
+      // offsets with the component rotation already baked in — the style
+      // rotation there only turned the image. Two baked variants exist for
+      // 90/270 on non-square symbols:
+      //  - true rotation about the centre: offsets land OUTSIDE the
+      //    unrotated w×h box (on the rotated artwork's lead tips) — use
+      //    them as-is;
+      //  - pins re-seated on the UNROTATED bbox border (dx in {0..w}) while
+      //    the rotated artwork spans h×w, leaving pins (h-w)/2 short of the
+      //    lead tips — rescale the offsets onto the rotated frame first.
+      // Either way, un-rotate back into the local frame afterwards so
+      // pinAbsolutePosition doesn't rotate twice.
+      if (!parentId) {
+        oldDialect = true
+        if (comp.rotation) {
+          let relX = pin.dx - comp.width / 2
+          let relY = pin.dy - comp.height / 2
+          const insideBox = Math.abs(relX) <= comp.width / 2 + 0.5 &&
+            Math.abs(relY) <= comp.height / 2 + 0.5
+          if (comp.rotation % 180 !== 0 && comp.width && comp.height && insideBox) {
+            relX *= comp.height / comp.width
+            relY *= comp.width / comp.height
+          }
+          const local = rotate90(relX, relY, -comp.rotation)
+          pin.dx = comp.width / 2 + local.x
+          pin.dy = comp.height / 2 + local.y
+        }
+      }
       comp.pins.push(pin)
       pinIndex.set(id, { comp, pin })
     }
+  }
+
+  if (oldDialect) {
+    doc.legacyNetGroups = extractLegacyNetGroups(edges, pinIndex)
+    return doc
   }
 
   for (const cell of edges) {
@@ -381,8 +429,101 @@ export function fromLegacyXml (xml) {
 
     if (!start || !end) continue
     const points = orthogonalize([start, ...waypoints, end])
-    if (points.length >= 2) doc.wires.push({ id, points })
+    if (points.length >= 2) doc.wires.push({ id, points: simplifyPolyline(points) })
   }
 
   return doc
+}
+
+/**
+ * Group the old editor's pins into nets using only edge connectivity — no
+ * stored wire geometry. Union-find over pin ids and edge ids: an edge unions
+ * with whatever each terminal references (a pin, or another edge for the old
+ * editor's wire-on-wire junctions); terminals that reference nothing fall
+ * back to the nearest pin within tolerance of their stored coordinate.
+ *
+ * @returns {Array<Array<{x, y}>>} absolute pin positions per net (nets with
+ *   at least two pins only), ready for autoWire's wirePointGroups
+ */
+function extractLegacyNetGroups (edgeCells, pinIndex, tolerance = 15) {
+  const parent = new Map()
+  const find = (k) => {
+    if (!parent.has(k)) {
+      parent.set(k, k)
+      return k
+    }
+    let root = k
+    while (parent.get(root) !== root) root = parent.get(root)
+    while (parent.get(k) !== root) {
+      const next = parent.get(k)
+      parent.set(k, root)
+      k = next
+    }
+    return root
+  }
+  const union = (a, b) => parent.set(find(a), find(b))
+
+  const pinPos = new Map()
+  for (const [pid, entry] of pinIndex) {
+    pinPos.set(pid, pinAbsolutePosition(entry.comp, entry.pin))
+  }
+
+  const edgeIds = new Set(edgeCells.map((c) => c.getAttribute('id')))
+  const loose = [] // terminals with no usable reference, matched by coordinate
+
+  for (const cell of edgeCells) {
+    const ekey = 'edge:' + cell.getAttribute('id')
+    const geomNode = geomOf(cell).node
+
+    const sides = [
+      { refs: ['source', 'sourceVertex'], pointAs: 'sourcePoint', xAttr: 'srcx', yAttr: 'srcy' },
+      { refs: ['target', 'targetVertex'], pointAs: 'targetPoint', xAttr: 'tarx', yAttr: 'tary' }
+    ]
+    for (const side of sides) {
+      const ref = cell.getAttribute(side.refs[0]) || cell.getAttribute(side.refs[1])
+      if (ref && pinIndex.has(ref)) {
+        union(ekey, 'pin:' + ref)
+        continue
+      }
+      if (ref && edgeIds.has(ref)) {
+        union(ekey, 'edge:' + ref)
+        continue
+      }
+      let pt = null
+      if (geomNode) {
+        for (let i = 0; i < geomNode.children.length; i++) {
+          const ch = geomNode.children[i]
+          if (ch.tagName === 'mxPoint' && ch.getAttribute('as') === side.pointAs) {
+            pt = { x: parseFloat(ch.getAttribute('x')) || 0, y: parseFloat(ch.getAttribute('y')) || 0 }
+          }
+        }
+      }
+      if (!pt) {
+        const x = cell.getAttribute(side.xAttr)
+        if (x !== null && x !== '') pt = { x: parseFloat(x) || 0, y: parseFloat(cell.getAttribute(side.yAttr)) || 0 }
+      }
+      if (pt) loose.push({ ekey, pt })
+    }
+  }
+
+  for (const t of loose) {
+    let best = null
+    let bestD = tolerance
+    for (const [pid, p] of pinPos) {
+      const d = Math.hypot(p.x - t.pt.x, p.y - t.pt.y)
+      if (d < bestD) {
+        bestD = d
+        best = pid
+      }
+    }
+    if (best) union(t.ekey, 'pin:' + best)
+  }
+
+  const groups = new Map()
+  for (const [pid, p] of pinPos) {
+    const root = find('pin:' + pid)
+    if (!groups.has(root)) groups.set(root, [])
+    groups.get(root).push({ x: p.x, y: p.y })
+  }
+  return [...groups.values()].filter((g) => g.length >= 2)
 }

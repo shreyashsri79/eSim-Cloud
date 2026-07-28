@@ -22,11 +22,64 @@ from ltiAPI import urls as ltiURLS
 from simulationAPI import verilog_urls as verilogURLs
 from chatbotAPI import urls as chatbotURLs
 
+API_DESCRIPTION = """
+REST API for **eSim-Cloud** — a browser based EDA platform for drawing,
+simulating and sharing analog/digital circuits and Arduino projects.
+
+## Architecture at a glance
+
+Requests hit an **Nginx** reverse proxy, which routes `/api/*` to this
+**Django + DRF** backend. Long running jobs (ngspice, Icarus Verilog, GHDL,
+Arduino AVR compilation) are **not** executed inside the request — they are
+queued to **Celery** workers through **Redis** and their results are polled by
+task id. Persistent data (users, saved schematics, component libraries,
+projects, simulation history) lives in **PostgreSQL**.
+
+## Typical simulation flow
+
+1. `POST /api/simulation/upload` (multipart, `file` = SPICE netlist)
+   → returns a Celery `task_id`.
+2. Poll `GET /api/simulation/status/{task_id}` until `state` is `SUCCESS`
+   (`details` then carries the parsed simulation data) or `FAILURE`.
+
+The Verilog (`/api/verilog/*`), HDL (`/api/simulation/hdl/upload`) and Arduino
+(`/api/arduino/*`) flows follow the same *upload → poll status* pattern.
+
+## Authentication
+
+Token based (Djoser + DRF TokenAuth):
+
+1. `POST /api/auth/users/` — register (sends an OTP e-mail).
+2. `POST /api/auth/users/activation/` — activate with the OTP.
+3. `POST /api/auth/token/login/` — obtain `auth_token`.
+4. Send it on protected endpoints as the header
+   `Authorization: Token <auth_token>`.
+
+Google OAuth2 login is available via `/api/auth/google-callback`.
+Endpoints marked with a lock icon in this UI require the token; everything
+else is public/anonymous.
+
+## Endpoint groups (tags)
+
+| Tag | Prefix | What it does |
+|-----|--------|--------------|
+| auth | `/api/auth/` | Register, activate, token login, social auth |
+| Simulation (ngspice) | `/api/simulation/` | Netlist/HDL upload, task status, history |
+| Verilog HDL | `/api/verilog/` | Multi-file Verilog compile/simulate (iverilog), VCD results |
+| Arduino | `/api/arduino/` | Compile Arduino sketches (C++/inline assembly) for AVR |
+| save | `/api/save*` | Save/load schematic state, versions, branches, sharing, gallery |
+| libraries / components | `/api/libraries` | KiCad component libraries, symbol search |
+| publish / tags | `/api/publish/` | Publish circuits as public projects, review flow |
+| workflow | `/api/workflow/` | Moderation: roles, project states, reports |
+| lti | `/api/lti/` | LMS integration (Moodle etc.) — build LTI apps, grade passback |
+| Chatbot | `/api/chat/` | AI assistant for debugging simulation errors |
+"""
+
 schema_view = get_schema_view(
     openapi.Info(
         title="eSim Cloud API",
         default_version='v1',
-        description="Public API Endpoints for eSim Cloud",
+        description=API_DESCRIPTION,
         license=openapi.License(name="GPLv3 License"),
     ),
     public=True,

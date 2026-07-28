@@ -18,6 +18,7 @@ import { schematicStore } from '../Canvas/schematicStore'
 import { toLegacyXml, fromLegacyXml } from '../Canvas/LegacyMxGraphSerializer'
 import { zoomAtPoint } from '../Canvas/geometry'
 import { compileNetlist } from '../Canvas/dsuNetlist'
+import { wirePointGroups } from '../TranslationLayer/autoWire'
 
 /** Legacy bootstrap hook — history now lives inside the schematic store. */
 export default function ToolbarTools () {}
@@ -226,6 +227,10 @@ export function renderGalleryXML (xml) {
   try {
     const doc = fromLegacyXml(xml)
     schematicStore.loadDocument(doc, { undoable: false })
+    // Old-editor saves carry no trustworthy wire geometry — the serializer
+    // returns bare components plus per-net pin groups; redraw the wires with
+    // the editor's own router, exactly like the KiCad importer does.
+    if (doc.legacyNetGroups) wirePointGroups(doc.legacyNetGroups)
     schematicStore.clearHistory()
   } catch (e) {
     console.error('Failed to load schematic XML', e)

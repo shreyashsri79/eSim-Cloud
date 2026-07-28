@@ -12,6 +12,7 @@ import {
 import { buildNetwork, compileNetlist, checkErc, DSU } from '../dsuNetlist'
 import { computeJunctions, snapProbeToWire } from '../junctions'
 import { toLegacyXml, fromLegacyXml } from '../LegacyMxGraphSerializer'
+import { wirePointGroups } from '../../TranslationLayer/autoWire'
 import { schematicStore } from '../schematicStore'
 
 const resistor = (id, x, y) => ({
@@ -189,6 +190,162 @@ describe('LegacyMxGraphSerializer', () => {
     const back = fromLegacyXml(toLegacyXml(doc))
     const net = buildNetwork(back)
     expect(net.pinNode.get('2:2')).toBe('0')
+  })
+
+  it('round-trips rotated components without moving their pins', () => {
+    const comp = resistor('2', 20, 40)
+    comp.rotation = 90
+    const before = comp.pins.map((p) => pinAbsolutePosition(comp, p))
+    const back = fromLegacyXml(toLegacyXml({ components: [comp], wires: [], probes: [] }))
+    const after = back.components[0].pins.map((p) => pinAbsolutePosition(back.components[0], p))
+    expect(after).toEqual(before)
+  })
+})
+
+describe('legacy old-editor import', () => {
+  // Old-editor saves: pin cells carry NO parent attribute and their offsets
+  // already include the component rotation; edges usually have no waypoints.
+  const base = '<mxCell id="0" Component="0" Pin="0"><Object as="properties"/></mxCell>' +
+    '<mxCell id="1" Component="0" Pin="0"><Object as="properties"/></mxCell>'
+
+  const oldComp = (id, x, y, w, h, rot) =>
+    `<mxCell id="${id}" value="R${id}" style="shape=image;image=../r.svg;rotation=${rot}" vertex="1" symbol="R" Component="1" CellType="Component" Pin="0">` +
+    `<mxGeometry x="${x}" y="${y}" width="${w}" height="${h}" as="geometry"/>` +
+    '<Object PREFIX="R1" NAME="R" as="properties"/></mxCell>'
+
+  const oldPin = (id, dx, dy) =>
+    `<mxCell id="${id}" value="1" style="align=right;rotation=0" vertex="1" Pin="1" Component="0">` +
+    `<mxGeometry x="${dx}" y="${dy}" width="0.5" height="0.5" as="geometry"/></mxCell>`
+
+  const oldEdge = (id, sv, tv, targetPoint) =>
+    `<mxCell id="${id}" edge="1" sourceVertex="${sv}" targetVertex="${tv}" Component="0" Pin="0">` +
+    '<mxGeometry relative="1" as="geometry">' +
+    (targetPoint ? `<mxPoint x="${targetPoint.x}" y="${targetPoint.y}" as="targetPoint"/>` : '') +
+    '<Array as="points"/></mxGeometry><Array as="PointsArray"/></mxCell>'
+
+  const wrap = (inner) => `<mxGraphModel><root>${base}${inner}</root></mxGraphModel>`
+
+  const expectManhattan = (points) => {
+    for (let i = 1; i < points.length; i++) {
+      expect(segmentAxis(points[i - 1], points[i])).not.toBeNull()
+    }
+  }
+
+  it('un-rotates baked pin offsets so pins land where the old editor drew them', () => {
+    // 100x100 comp rotated 90; old editor stored the on-screen offsets
+    // (100,50) and (1,50) — the style rotation only turned the image.
+    const xml = wrap(
+      oldComp('2', 300, 200, 100, 100, 90) +
+      oldPin('3', 100, 50) + oldPin('4', 1, 50)
+    )
+    const doc = fromLegacyXml(xml)
+    const comp = doc.components[0]
+    expect(comp.rotation).toBe(90)
+    expect(pinAbsolutePosition(comp, comp.pins[0])).toEqual({ x: 400, y: 250 })
+    expect(pinAbsolutePosition(comp, comp.pins[1])).toEqual({ x: 301, y: 250 })
+  })
+
+  it('rescales rotated non-square pins onto the lead tips of the rotated artwork', () => {
+    // Real Wheatstone Bridge numbers: 58.5x100 vertical resistor rotated 90,
+    // old editor re-seated pins on the unrotated border at (58,50)/(0,50) —
+    // 20.75px short of the rotated symbol's lead tips at centre +-50.
+    const xml = wrap(
+      oldComp('2', 440, 180, 58.5, 100, 90) +
+      oldPin('3', 58, 50) + oldPin('4', 0, 50)
+    )
+    const doc = fromLegacyXml(xml)
+    const comp = doc.components[0]
+    const p0 = pinAbsolutePosition(comp, comp.pins[0])
+    const p1 = pinAbsolutePosition(comp, comp.pins[1])
+    // centre (469.25, 230); lead tips at x = centre +- h/2
+    expect(p1.x).toBeCloseTo(419.25, 5)
+    expect(p1.y).toBeCloseTo(230, 5)
+    expect(p0.x).toBeCloseTo(469.25 + 28.75 * (100 / 58.5), 5) // ~518.4, stored dx=58 of 58.5
+    expect(p0.y).toBeCloseTo(230, 5)
+  })
+
+  it('keeps truly-rotated baked offsets that already sit on the lead tips', () => {
+    // Real "Resistive Divider, AC input" numbers: 16x100 resistor rotated 90
+    // whose baked offsets (58,50)/(-41,50) are a genuine centre rotation —
+    // they land outside the unrotated box, on the rotated lead tips. No
+    // rescale: absolute positions must equal the stored screen positions.
+    const xml = wrap(
+      oldComp('2', 260, 140, 16, 100, 90) +
+      oldPin('3', 58, 50) + oldPin('4', -41, 50)
+    )
+    const doc = fromLegacyXml(xml)
+    const comp = doc.components[0]
+    expect(pinAbsolutePosition(comp, comp.pins[0])).toEqual({ x: 318, y: 190 })
+    expect(pinAbsolutePosition(comp, comp.pins[1])).toEqual({ x: 219, y: 190 })
+  })
+
+  it('discards old wire geometry and extracts per-net pin groups instead', () => {
+    const xml = wrap(
+      oldComp('2', 0, 80, 60, 40, 0) + oldPin('3', 60, 20) +
+      oldComp('4', 300, 80, 60, 40, 0) + oldPin('5', 0, 20) +
+      oldComp('6', 150, 60, 60, 80, 0) + oldPin('7', 30, 0) +
+      oldEdge('8', '3', '5')
+    )
+    const doc = fromLegacyXml(xml)
+    expect(doc.wires).toHaveLength(0)
+    // pins 3 and 5 form the only net; the blocker's pin 7 is unconnected
+    expect(doc.legacyNetGroups).toEqual([[{ x: 60, y: 100 }, { x: 300, y: 100 }]])
+  })
+
+  it('redraws nets with the editor router, avoiding component bodies', () => {
+    const xml = wrap(
+      oldComp('2', 0, 80, 60, 40, 0) + oldPin('3', 60, 20) +
+      oldComp('4', 300, 80, 60, 40, 0) + oldPin('5', 0, 20) +
+      oldComp('6', 150, 60, 60, 80, 0) + oldPin('7', 30, 0) +
+      oldEdge('8', '3', '5')
+    )
+    const doc = fromLegacyXml(xml)
+    schematicStore.loadDocument(doc, { undoable: false })
+    wirePointGroups(doc.legacyNetGroups)
+    const state = schematicStore.getState()
+    expect(state.wires).toHaveLength(1)
+    const wire = state.wires[0]
+    const ends = [wire.points[0], wire.points[wire.points.length - 1]]
+    expect(ends).toContainEqual({ x: 60, y: 100 })
+    expect(ends).toContainEqual({ x: 300, y: 100 })
+    expectManhattan(wire.points)
+    expect(pathClear(wire.points, state.components.map(componentBBox))).toBe(true)
+  })
+
+  it('keeps wire-on-wire junction connectivity via edge-to-edge references', () => {
+    const xml = wrap(
+      oldComp('2', 480, 0, 40, 20, 0) + oldPin('3', 20, 20) +
+      oldComp('4', 480, 200, 40, 20, 0) + oldPin('5', 20, 0) +
+      oldComp('6', 380, 90, 40, 20, 0) + oldPin('7', 40, 10) +
+      oldEdge('8', '3', '5') +
+      // terminates on wire 8; stored coordinate drifted 10px off its path
+      oldEdge('9', '7', '8', { x: 510, y: 105 })
+    )
+    const doc = fromLegacyXml(xml)
+    // one net spanning all three pins, geometry of edge 9's stale point ignored
+    expect(doc.legacyNetGroups).toHaveLength(1)
+    expect(doc.legacyNetGroups[0]).toHaveLength(3)
+    schematicStore.loadDocument(doc, { undoable: false })
+    wirePointGroups(doc.legacyNetGroups)
+    const state = schematicStore.getState()
+    for (const wire of state.wires) expectManhattan(wire.points)
+    const net = buildNetwork(state)
+    expect(net.pinNode.get('2:1')).toBe(net.pinNode.get('6:1'))
+    expect(net.pinNode.get('2:1')).toBe(net.pinNode.get('4:1'))
+  })
+
+  it('snaps reference-less terminals to the nearest pin by coordinate', () => {
+    // edge with no resolvable targetVertex, stored point 6px off pin 5
+    const xml = wrap(
+      oldComp('2', 0, 80, 60, 40, 0) + oldPin('3', 60, 20) +
+      oldComp('4', 300, 80, 60, 40, 0) + oldPin('5', 0, 20) +
+      `<mxCell id="8" edge="1" sourceVertex="3" targetVertex="0" Component="0" Pin="0">` +
+      '<mxGeometry relative="1" as="geometry">' +
+      '<mxPoint x="306" y="104" as="targetPoint"/>' +
+      '</mxGeometry></mxCell>'
+    )
+    const doc = fromLegacyXml(xml)
+    expect(doc.legacyNetGroups).toEqual([[{ x: 60, y: 100 }, { x: 300, y: 100 }]])
   })
 })
 
